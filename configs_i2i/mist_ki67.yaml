@@ -211,7 +211,7 @@ data:
       noise_scale: 1.0
       seed: 42
   pred_dataset: null
-  train_batch_size: 2
+  train_batch_size: 1
   train_num_workers: 2
   train_prefetch_factor: 4
   eval_batch_size: 2
