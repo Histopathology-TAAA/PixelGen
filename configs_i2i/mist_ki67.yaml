@@ -188,7 +188,7 @@ model:
       differentiable: false
       fused: null
   lr_scheduler: null
-  eval_original_model: false
+  eval_original_model: true
   num_vis_samples: 8
 data:
   train_dataset:
