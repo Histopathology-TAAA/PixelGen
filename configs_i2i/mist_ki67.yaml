@@ -194,14 +194,14 @@ data:
   train_dataset:
     class_path: src.data.dataset.mist.MISTTrainDataset
     init_args:
-      root: /kaggle/input/mist-dataset/Ki67/TrainValAB
+      root: /kaggle/working/PixelGen/Ki67/TrainValAB
       resolution: 256
       crop_size: 512
       random_flip: true
   eval_dataset:
     class_path: src.data.dataset.mist.MISTValDataset
     init_args:
-      root: /kaggle/input/mist-dataset/Ki67/TrainValAB
+      root: /kaggle/working/PixelGen/Ki67/TrainValAB
       resolution: 256
       crop_size: 512
       noise_scale: 1.0
