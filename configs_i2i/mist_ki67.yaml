@@ -20,7 +20,7 @@ trainer:
       dir: null
       id: null
       anonymous: null
-      project: MIST_Ki67_VirtualStaining
+      project: virtual-stain
       log_model: false
       experiment: null
       prefix: ''
