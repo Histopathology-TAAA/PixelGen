@@ -46,6 +46,125 @@ def eval_collate_fn(batch):
     x = torch.stack(x, dim=0)
     return x, y, metadata
 
+
+def i2i_collate_fn(batch):
+    """Collate function for I2I training. Stacks x and metadata tensors."""
+    batch = copy.deepcopy(batch)
+    x, y, metadata = list(zip(*batch))
+    stacked_metadata = {}
+    for key in metadata[0].keys():
+        try:
+            if isinstance(metadata[0][key], torch.Tensor):
+                stacked_metadata[key] = torch.stack([m[key] for m in metadata], dim=0)
+            else:
+                stacked_metadata[key] = [m[key] for m in metadata]
+        except:
+            pass
+    x = torch.stack(x, dim=0)
+    return x, y, stacked_metadata
+
+
+def i2i_eval_collate_fn(batch):
+    """Collate function for I2I validation/prediction. Stacks x and metadata tensors."""
+    batch = copy.deepcopy(batch)
+    x, y, metadata = list(zip(*batch))
+    stacked_metadata = {}
+    for key in metadata[0].keys():
+        try:
+            if isinstance(metadata[0][key], torch.Tensor):
+                stacked_metadata[key] = torch.stack([m[key] for m in metadata], dim=0)
+            elif callable(metadata[0][key]):
+                # Keep callables (like save_fn) as lists
+                stacked_metadata[key] = [m[key] for m in metadata]
+            else:
+                stacked_metadata[key] = [m[key] for m in metadata]
+        except:
+            pass
+    x = torch.stack(x, dim=0)
+    return x, y, stacked_metadata
+
+
+class I2IDataModule(pl.LightningDataModule):
+    """DataModule for Image-to-Image tasks. Uses I2I collate functions that stack metadata."""
+    def __init__(self,
+                train_dataset: Dataset = None,
+                eval_dataset: Dataset = None,
+                pred_dataset: Dataset = None,
+                train_batch_size=4,
+                train_num_workers=4,
+                train_prefetch_factor=4,
+                eval_batch_size=4,
+                eval_num_workers=2,
+                pred_batch_size=4,
+                pred_num_workers=2,
+    ):
+        super().__init__()
+        self.train_dataset = train_dataset
+        self.eval_dataset = eval_dataset
+        self.pred_dataset = pred_dataset
+        self.train_batch_size = train_batch_size
+        self.train_num_workers = train_num_workers
+        self.train_prefetch_factor = train_prefetch_factor
+        self.eval_batch_size = eval_batch_size
+        self.pred_batch_size = pred_batch_size
+        self.pred_num_workers = pred_num_workers
+        self.eval_num_workers = eval_num_workers
+        self._train_dataloader = None
+
+    def on_before_batch_transfer(self, batch: Any, dataloader_idx: int) -> Any:
+        return batch
+
+    def train_dataloader(self) -> TRAIN_DATALOADERS:
+        global_rank = self.trainer.global_rank
+        world_size = self.trainer.world_size
+        if not isinstance(self.train_dataset, IterableDataset):
+            sampler = torch.utils.data.distributed.DistributedSampler(
+                self.train_dataset, num_replicas=world_size, rank=global_rank
+            )
+        else:
+            sampler = None
+        self._train_dataloader = DataLoader(
+            self.train_dataset,
+            self.train_batch_size,
+            timeout=6000,
+            num_workers=self.train_num_workers,
+            prefetch_factor=self.train_prefetch_factor,
+            collate_fn=i2i_collate_fn,
+            sampler=sampler,
+        )
+        return self._train_dataloader
+
+    def val_dataloader(self) -> EVAL_DATALOADERS:
+        global_rank = self.trainer.global_rank
+        world_size = self.trainer.world_size
+        from torch.utils.data import DistributedSampler
+        sampler = DistributedSampler(
+            self.eval_dataset, num_replicas=world_size, rank=global_rank, shuffle=False
+        )
+        return DataLoader(
+            self.eval_dataset, self.eval_batch_size,
+            num_workers=self.eval_num_workers,
+            prefetch_factor=2,
+            sampler=sampler,
+            collate_fn=i2i_eval_collate_fn,
+        )
+
+    def predict_dataloader(self) -> EVAL_DATALOADERS:
+        global_rank = self.trainer.global_rank
+        world_size = self.trainer.world_size
+        from torch.utils.data import DistributedSampler
+        sampler = DistributedSampler(
+            self.pred_dataset, num_replicas=world_size, rank=global_rank, shuffle=False
+        )
+        return DataLoader(
+            self.pred_dataset, batch_size=self.pred_batch_size,
+            num_workers=self.pred_num_workers,
+            prefetch_factor=2,
+            sampler=sampler,
+            collate_fn=i2i_eval_collate_fn,
+        )
+
+
 class DataModule(pl.LightningDataModule):
     def __init__(self,
                 train_dataset:Dataset=None,

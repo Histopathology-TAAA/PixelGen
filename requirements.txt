@@ -13,5 +13,6 @@ webdataset
 tensorboard
 einops
 lpips
+torchmetrics
 webdataset
 pyarrow

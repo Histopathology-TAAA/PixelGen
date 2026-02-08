@@ -1,0 +1,220 @@
+# MIST Ki67 Virtual Staining: H&E -> IHC
+# Image-to-Image with PixelGen (JiT_I2I ~195M params)
+# Designed for Kaggle T4 (16GB VRAM)
+seed_everything: 42
+torch_hub_dir: null
+huggingface_cache_dir: null
+trainer:
+  accelerator: auto
+  strategy: auto
+  devices: auto
+  num_nodes: 1
+  precision: bf16-mixed
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      name: MIST_Ki67_I2I_JiT_195M
+      save_dir: .
+      version: null
+      offline: false
+      dir: null
+      id: null
+      anonymous: null
+      project: MIST_Ki67_VirtualStaining
+      log_model: false
+      experiment: null
+      prefix: ''
+      checkpoint_name: null
+      entity: null
+      notes: 'Virtual staining H&E->IHC on MIST Ki67 with JiT_I2I ~195M params. REPA+LPIPS+DINO losses.'
+      tags:
+      - mist
+      - ki67
+      - virtual-staining
+      - i2i
+      config: null
+      config_exclude_keys: null
+      config_include_keys: null
+      allow_val_change: null
+      group: null
+      job_type: null
+      mode: null
+      force: null
+      reinit: null
+      resume: null
+      resume_from: null
+      fork_from: null
+      save_code: null
+      tensorboard: null
+      sync_tensorboard: null
+      monitor_gym: null
+      settings: null
+  callbacks:
+  - class_path: src.callbacks.model_checkpoint.CheckpointHook
+    init_args:
+      dirpath: null
+      filename: null
+      monitor: null
+      verbose: false
+      save_last: true
+      save_top_k: -1
+      save_on_exception: false
+      save_weights_only: false
+      mode: min
+      auto_insert_metric_name: true
+      every_n_train_steps: 5000
+      train_time_interval: null
+      every_n_epochs: null
+      save_on_train_epoch_end: null
+      enable_version_counter: true
+  fast_dev_run: false
+  max_epochs: null
+  min_epochs: null
+  max_steps: 100000
+  min_steps: null
+  max_time: null
+  limit_train_batches: null
+  limit_val_batches: null
+  limit_test_batches: null
+  limit_predict_batches: null
+  overfit_batches: 0.0
+  val_check_interval: 5000
+  check_val_every_n_epoch: null
+  num_sanity_val_steps: 0
+  log_every_n_steps: 20
+  enable_checkpointing: null
+  enable_progress_bar: null
+  enable_model_summary: null
+  accumulate_grad_batches: 4
+  gradient_clip_val: 1.0
+  gradient_clip_algorithm: null
+  deterministic: null
+  benchmark: null
+  inference_mode: true
+  use_distributed_sampler: false
+  profiler: null
+  detect_anomaly: false
+  barebones: false
+  plugins:
+  - class_path: src.plugins.bd_env.BDEnvironment
+  sync_batchnorm: false
+  reload_dataloaders_every_n_epochs: 0
+  default_root_dir: ./mist_ki67_workdirs
+  model_registry: null
+model:
+  vae:
+    class_path: src.models.autoencoder.pixel.PixelAE
+    init_args:
+      scale: 1.0
+      shift: 0.0
+  conditioner:
+    class_path: src.models.conditioner.image.ImageConditioner
+  denoiser:
+    class_path: src.models.transformer.JiT_I2I.JiT_I2I
+    init_args:
+      input_size: 256
+      patch_size: 16
+      in_channels: 3
+      cond_channels: 3
+      hidden_size: 768
+      depth: 18
+      num_heads: 12
+      mlp_ratio: 4.0
+      attn_drop: 0.0
+      proj_drop: 0.0
+      bottleneck_dim: 128
+      use_compile: false
+  diffusion_trainer:
+    class_path: src.diffusion.flow_matching.training_i2i_repa.I2IREPATrainer
+    init_args:
+      scheduler:
+        class_path: src.diffusion.flow_matching.scheduling.LinearScheduler
+      loss_weight_fn: src.diffusion.flow_matching.training_i2i_repa.constant
+      feat_loss_weight: 0.5
+      lognorm_t: true
+      timeshift: 1.0
+      encoder:
+        class_path: src.models.encoder.DINOv2
+        init_args:
+          weight_path: ~/.cache/torch/hub/checkpoints/dinov2_vitb14_pretrain.pth
+          base_patch_size: 16
+      align_layer: 8
+      proj_denoiser_dim: 768
+      proj_hidden_dim: 768
+      proj_encoder_dim: 768
+      P_mean: -0.8
+      P_std: 0.8
+      t_eps: 0.05
+      lpips_weight: 0.1
+      dino_weight: 0.01
+      percept_t_threshold: 0.3
+      noise_scale: 1.0
+      patch_size: 16
+      null_condition_p: 0.0
+  diffusion_sampler:
+    class_path: src.diffusion.flow_matching.sampling.EulerSamplerJiT
+    init_args:
+      w_scheduler:
+        class_path: src.diffusion.flow_matching.scheduling.LinearScheduler
+      timeshift: 1.0
+      guidance_interval_min: 0.0
+      guidance_interval_max: 1.0
+      step_fn: src.diffusion.flow_matching.sampling.ode_step_fn
+      last_step: null
+      last_step_fn: src.diffusion.flow_matching.sampling.ode_step_fn
+      scheduler:
+        class_path: src.diffusion.flow_matching.scheduling.LinearScheduler
+      guidance_fn: src.diffusion.base.guidance.simple_guidance_fn
+      num_steps: 50
+      guidance: 1.0
+  ema_tracker:
+    class_path: src.callbacks.simple_ema.SimpleEMA
+    init_args:
+      decay: 0.9999
+      every_n_steps: 1
+  optimizer:
+    class_path: torch.optim.AdamW
+    init_args:
+      lr: 0.0001
+      betas:
+      - 0.9
+      - 0.999
+      eps: 1.0e-08
+      weight_decay: 0.0
+      amsgrad: false
+      maximize: false
+      foreach: null
+      capturable: false
+      differentiable: false
+      fused: null
+  lr_scheduler: null
+  eval_original_model: false
+  num_vis_samples: 8
+data:
+  train_dataset:
+    class_path: src.data.dataset.mist.MISTTrainDataset
+    init_args:
+      root: /kaggle/input/mist-dataset/Ki67/TrainValAB
+      resolution: 256
+      crop_size: 512
+      random_flip: true
+  eval_dataset:
+    class_path: src.data.dataset.mist.MISTValDataset
+    init_args:
+      root: /kaggle/input/mist-dataset/Ki67/TrainValAB
+      resolution: 256
+      crop_size: 512
+      noise_scale: 1.0
+      seed: 42
+  pred_dataset: null
+  train_batch_size: 4
+  train_num_workers: 2
+  train_prefetch_factor: 4
+  eval_batch_size: 4
+  eval_num_workers: 2
+  pred_batch_size: 4
+  pred_num_workers: 1
+tags:
+  exp: MIST_Ki67_I2I_JiT_195M
+ckpt_path: null
+
