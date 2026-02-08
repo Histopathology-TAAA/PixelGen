@@ -1,5 +1,5 @@
 # MIST Ki67 Virtual Staining: H&E -> IHC
-# Image-to-Image with PixelGen (JiT_I2I ~195M params)
+# Image-to-Image with PixelGen (JiT_I2I XL ~671M params, pretrained from ImageNet)
 # Designed for Kaggle T4 (16GB VRAM)
 seed_everything: 42
 torch_hub_dir: null
@@ -13,7 +13,7 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
-      name: MIST_Ki67_I2I_JiT_195M
+      name: MIST_Ki67_I2I_JiT_XL_pretrained
       save_dir: .
       version: null
       offline: false
@@ -26,12 +26,13 @@ trainer:
       prefix: ''
       checkpoint_name: null
       entity: null
-      notes: 'Virtual staining H&E->IHC on MIST Ki67 with JiT_I2I ~195M params. REPA+LPIPS+DINO losses.'
+      notes: 'Virtual staining H&E->IHC on MIST Ki67 with JiT_I2I XL pretrained from PixelGen_XL_80ep. REPA+LPIPS+DINO losses.'
       tags:
       - mist
       - ki67
       - virtual-staining
       - i2i
+      - pretrained-xl
       config: null
       config_exclude_keys: null
       config_include_keys: null
@@ -116,14 +117,17 @@ model:
       patch_size: 16
       in_channels: 3
       cond_channels: 3
-      hidden_size: 768
-      depth: 18
-      num_heads: 12
+      hidden_size: 1152
+      depth: 28
+      num_heads: 16
       mlp_ratio: 4.0
       attn_drop: 0.0
-      proj_drop: 0.0
+      proj_drop: 0.1
       bottleneck_dim: 128
+      use_bottleneck: false
       use_compile: false
+      weight_path: /kaggle/working/PixelGen/PixelGen_XL_80ep.ckpt
+      load_ema: true
   diffusion_trainer:
     class_path: src.diffusion.flow_matching.training_i2i_repa.I2IREPATrainer
     init_args:
@@ -139,8 +143,8 @@ model:
           weight_path: ~/.cache/torch/hub/checkpoints/dinov2_vitb14_pretrain.pth
           base_patch_size: 16
       align_layer: 8
-      proj_denoiser_dim: 768
-      proj_hidden_dim: 768
+      proj_denoiser_dim: 1152
+      proj_hidden_dim: 1152
       proj_encoder_dim: 768
       P_mean: -0.8
       P_std: 0.8
@@ -188,7 +192,7 @@ model:
       differentiable: false
       fused: null
   lr_scheduler: null
-  eval_original_model: true
+  eval_original_model: false
   num_vis_samples: 8
 data:
   train_dataset:
@@ -207,14 +211,13 @@ data:
       noise_scale: 1.0
       seed: 42
   pred_dataset: null
-  train_batch_size: 4
+  train_batch_size: 2
   train_num_workers: 2
   train_prefetch_factor: 4
-  eval_batch_size: 4
+  eval_batch_size: 2
   eval_num_workers: 2
-  pred_batch_size: 4
+  pred_batch_size: 2
   pred_num_workers: 1
 tags:
-  exp: MIST_Ki67_I2I_JiT_195M
+  exp: MIST_Ki67_I2I_JiT_XL_pretrained
 ckpt_path: null
-
