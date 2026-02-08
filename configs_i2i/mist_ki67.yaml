@@ -145,8 +145,8 @@ model:
       P_mean: -0.8
       P_std: 0.8
       t_eps: 0.05
-      lpips_weight: 0.1
-      dino_weight: 0.01
+      lpips_weight: 0.0
+      dino_weight: 0.0
       percept_t_threshold: 0.3
       noise_scale: 1.0
       patch_size: 16
