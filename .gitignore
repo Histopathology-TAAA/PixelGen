@@ -6,3 +6,7 @@ pretrained_weights
 wandb
 merge_weight.py
 *.pyc
+mist_ki67_workdirs
+*.ckpt
+*.pt
+*.pth
