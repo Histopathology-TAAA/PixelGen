@@ -569,3 +569,11 @@ def JiT_I2I_S(**kwargs):
         depth=18, hidden_size=768, num_heads=12,
         bottleneck_dim=128, use_bottleneck=True, patch_size=16, **kwargs
     )
+
+
+def JiT_I2I_B(**kwargs):
+    """Base I2I model (~130M params) - good for small datasets (< 10K images)"""
+    return JiT_I2I(
+        depth=12, hidden_size=768, num_heads=12,
+        bottleneck_dim=128, use_bottleneck=True, patch_size=16, **kwargs
+    )

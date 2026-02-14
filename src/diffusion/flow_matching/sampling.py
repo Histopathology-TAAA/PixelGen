@@ -148,18 +148,19 @@ class EulerSamplerJiT(BaseSampler):
                 logger.warning("current sampler is ODE sampler, but w_scheduler is enabled")
         self.t_eps = 5e-2
 
-    def _impl_sampling(self, net, noise, condition, uncondition):
+    def _impl_sampling(self, net, noise, condition, uncondition=None):
         """
-        sampling process of Euler sampler
-        -
+        sampling process of Euler sampler.
+        When uncondition is None, runs a single forward pass per step (no CFG).
         """
         batch_size = noise.shape[0]
         steps = self.timesteps.to(noise.device, noise.dtype)
-        cfg_condition = torch.cat([uncondition, condition], dim=0)
+        use_cfg = uncondition is not None and self.guidance != 1.0
+        if use_cfg:
+            cfg_condition = torch.cat([uncondition, condition], dim=0)
         x = noise
         x_trajs = [noise,]
         v_trajs = []
-        # print(steps)
         for i, (t_cur, t_next) in enumerate(zip(steps[:-1], steps[1:])):
             dt = t_next - t_cur
             t_cur = t_cur.repeat(batch_size)
@@ -171,18 +172,21 @@ class EulerSamplerJiT(BaseSampler):
             else:
                 w = 0.0
 
-            cfg_x = torch.cat([x, x], dim=0)
-            cfg_t = t_cur.repeat(2)
-            out = net(cfg_x, cfg_t, cfg_condition)
-            # out = out.clamp(min=-1, max=1)
-            out = (out - cfg_x)/(1.0-cfg_t.view(-1, 1, 1, 1)).clamp_min(self.t_eps) # pred v
-
-            # print(t_cur[0])
-            if t_cur[0] > self.guidance_interval_min and t_cur[0] <= self.guidance_interval_max:
-                guidance = self.guidance
-                out = self.guidance_fn(out, guidance)
+            if use_cfg:
+                cfg_x = torch.cat([x, x], dim=0)
+                cfg_t = t_cur.repeat(2)
+                out = net(cfg_x, cfg_t, cfg_condition)
+                out = (out - cfg_x)/(1.0-cfg_t.view(-1, 1, 1, 1)).clamp_min(self.t_eps) # pred v
+                if t_cur[0] > self.guidance_interval_min and t_cur[0] <= self.guidance_interval_max:
+                    guidance = self.guidance
+                    out = self.guidance_fn(out, guidance)
+                else:
+                    out = self.guidance_fn(out, 1.0)
             else:
-                out = self.guidance_fn(out, 1.0)
+                # No CFG: single forward pass
+                out = net(x, t_cur, condition)
+                out = (out - x)/(1.0-t_cur.view(-1, 1, 1, 1)).clamp_min(self.t_eps) # pred v
+
             v = out
             s = ((1/dalpha_over_alpha)*v - x)/(sigma**2 - (1/dalpha_over_alpha)*dsigma_mul_sigma)
             if i < self.num_steps -1 :

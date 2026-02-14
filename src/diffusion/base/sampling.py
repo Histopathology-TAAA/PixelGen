@@ -24,7 +24,7 @@ class BaseSampler(nn.Module):
     def _impl_sampling(self, net, noise, condition, uncondition):
         raise NotImplementedError
 
-    def forward(self, net, noise, condition, uncondition, return_x_trajs=False, return_v_trajs=False):
+    def forward(self, net, noise, condition, uncondition=None, return_x_trajs=False, return_v_trajs=False):
         x_trajs, v_trajs = self._impl_sampling(net, noise, condition, uncondition)
         if return_x_trajs and return_v_trajs:
             return x_trajs[-1], x_trajs, v_trajs

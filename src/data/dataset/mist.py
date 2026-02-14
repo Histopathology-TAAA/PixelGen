@@ -85,6 +85,13 @@ class MISTTrainDataset(Dataset):
             img_A = TF.vflip(img_A)
             img_B = TF.vflip(img_B)
 
+        # Random 90-degree rotation (histopathology patches have no canonical orientation)
+        if self.random_flip:
+            angle = random.choice([0, 90, 180, 270])
+            if angle != 0:
+                img_A = TF.rotate(img_A, angle)
+                img_B = TF.rotate(img_B, angle)
+
         # Convert to tensor [0, 1]
         raw_A = to_tensor(img_A)  # H&E raw [0,1]
         raw_B = to_tensor(img_B)  # IHC raw [0,1]

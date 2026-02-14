@@ -1,6 +1,6 @@
 # MIST Ki67 Virtual Staining: H&E -> IHC
-# Image-to-Image with PixelGen (JiT_I2I XL ~671M params, pretrained from ImageNet)
-
+# Experiment v2: Targeting blurriness from v1 (scratch S)
+# Key changes: 5x LPIPS, 5x DINO, wider percept gating, CFG training, EMA eval, B model
 seed_everything: 42
 torch_hub_dir: null
 huggingface_cache_dir: null
@@ -13,7 +13,7 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
-      name: MIST_Ki67_I2I_JiT_XL_pretrained
+      name: MIST_Ki67_I2I_JiT_B_v2_sharp
       save_dir: .
       version: null
       offline: false
@@ -26,13 +26,13 @@ trainer:
       prefix: ''
       checkpoint_name: null
       entity: null
-      notes: 'Virtual staining H&E->IHC on MIST Ki67 with JiT_I2I XL pretrained from PixelGen_XL_80ep. REPA+LPIPS+DINO losses.'
+      notes: 'v2: JiT_I2I_B (12 blocks ~130M) from scratch. Lower LPIPS(0.05)+DINO(0.005), CFG training(p=0.1, g=4), percept_t=0.3'
       tags:
       - mist
       - ki67
       - virtual-staining
       - i2i
-      - pretrained-xl
+      - v2-sharp-B
       config: null
       config_exclude_keys: null
       config_include_keys: null
@@ -63,7 +63,7 @@ trainer:
       save_weights_only: false
       mode: min
       auto_insert_metric_name: true
-      every_n_train_steps: 10000
+      every_n_train_steps: 5000
       train_time_interval: null
       every_n_epochs: null
       save_on_train_epoch_end: null
@@ -71,7 +71,7 @@ trainer:
   fast_dev_run: false
   max_epochs: null
   min_epochs: null
-  max_steps: 50000
+  max_steps: 40000
   min_steps: null
   max_time: null
   limit_train_batches: null
@@ -117,16 +117,16 @@ model:
       patch_size: 16
       in_channels: 3
       cond_channels: 3
-      hidden_size: 1152
-      depth: 28
-      num_heads: 16
+      hidden_size: 768
+      depth: 12
+      num_heads: 12
       mlp_ratio: 4.0
       attn_drop: 0.0
       proj_drop: 0.1
       bottleneck_dim: 128
-      use_bottleneck: false
+      use_bottleneck: true
       use_compile: false
-      weight_path: /scratch/exp1/a.ayman/diff/PixelGen/PixelGen_XL_80ep.ckpt
+      weight_path: null
       load_ema: true
   diffusion_trainer:
     class_path: src.diffusion.flow_matching.training_i2i_repa.I2IREPATrainer
@@ -134,7 +134,7 @@ model:
       scheduler:
         class_path: src.diffusion.flow_matching.scheduling.LinearScheduler
       loss_weight_fn: src.diffusion.flow_matching.training_i2i_repa.constant
-      feat_loss_weight: 0.5
+      feat_loss_weight: 0.2
       lognorm_t: true
       timeshift: 1.0
       encoder:
@@ -142,19 +142,19 @@ model:
         init_args:
           weight_path: ~/.cache/torch/hub/checkpoints/dinov2_vitb14_pretrain.pth
           base_patch_size: 16
-      align_layer: 8
-      proj_denoiser_dim: 1152
-      proj_hidden_dim: 1152
+      align_layer: 5
+      proj_denoiser_dim: 768
+      proj_hidden_dim: 768
       proj_encoder_dim: 768
       P_mean: -0.8
       P_std: 0.8
       t_eps: 0.05
-      lpips_weight: 0.1
-      dino_weight: 0.01
-      percept_t_threshold: 0.3
+      lpips_weight: 0.05
+      dino_weight: 0.005
+      percept_t_threshold: 0.4
       noise_scale: 1.0
       patch_size: 16
-      null_condition_p: 0.0
+      null_condition_p: 0.1
   diffusion_sampler:
     class_path: src.diffusion.flow_matching.sampling.EulerSamplerJiT
     init_args:
@@ -170,21 +170,21 @@ model:
         class_path: src.diffusion.flow_matching.scheduling.LinearScheduler
       guidance_fn: src.diffusion.base.guidance.simple_guidance_fn
       num_steps: 50
-      guidance: 1.0
+      guidance: 4.0
   ema_tracker:
     class_path: src.callbacks.simple_ema.SimpleEMA
     init_args:
-      decay: 0.9999
+      decay: 0.999
       every_n_steps: 1
   optimizer:
     class_path: torch.optim.AdamW
     init_args:
-      lr: 0.0001
+      lr: 0.00005
       betas:
       - 0.9
       - 0.999
       eps: 1.0e-08
-      weight_decay: 0.0
+      weight_decay: 0.01
       amsgrad: false
       maximize: false
       foreach: null
@@ -219,5 +219,5 @@ data:
   pred_batch_size: 8
   pred_num_workers: 6
 tags:
-  exp: MIST_Ki67_I2I_JiT_XL_pretrained
+  exp: MIST_Ki67_I2I_JiT_B_v2_sharp
 ckpt_path: null

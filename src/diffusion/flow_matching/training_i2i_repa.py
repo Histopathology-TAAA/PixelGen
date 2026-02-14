@@ -223,6 +223,11 @@ class I2IREPATrainer(BaseTrainer):
         out.update(dino_losses)
         return out
 
+    def __call__(self, net, ema_net, solver, x, condition, uncondition=None, metadata=None):
+        """Override BaseTrainer to skip CFG null-condition masking for I2I."""
+        # No null condition dropout — condition is always the real H&E image
+        return self._impl_trainstep(net, ema_net, solver, x, condition, metadata)
+
     def state_dict(self, *args, destination=None, prefix="", keep_vars=False):
         if destination is None:
             destination = {}

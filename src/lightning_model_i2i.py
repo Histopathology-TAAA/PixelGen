@@ -150,30 +150,27 @@ class I2ILightningModel(pl.LightningModule):
         metadata["global_step"] = self.global_step
         with torch.no_grad():
             x = self.vae.encode(x)
-            condition, uncondition = self.conditioner(y, metadata)
+            condition, _ = self.conditioner(y, metadata)
         loss = self.diffusion_trainer(
             self.denoiser,
             self.ema_denoiser,
             self.diffusion_sampler,
             x,
             condition,
-            uncondition,
-            metadata,
+            metadata=metadata,
         )
         self.log_dict(loss, prog_bar=True, on_step=True, sync_dist=False)
         return loss["loss"]
 
     def _generate_samples(self, noise, condition_image):
-        """Generate IHC samples from noise and H&E condition using the EMA model."""
-        # condition_image is the H&E input
-        uncondition = torch.zeros_like(condition_image)
-
+        """Generate IHC samples from noise and H&E condition. No CFG — single forward pass."""
         if self.eval_original_model:
             net = self.denoiser
         else:
             net = self.ema_denoiser
 
-        samples = self.diffusion_sampler(net, noise, condition_image, uncondition)
+        # No uncondition needed — sampler runs single forward pass
+        samples = self.diffusion_sampler(net, noise, condition_image)
         samples = self.vae.decode(samples)
         return samples
 
