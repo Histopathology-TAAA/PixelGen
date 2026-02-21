@@ -1,4 +1,7 @@
-# lightning.pytorch==2.6.1
+# MIST er Virtual Staining: H&E -> IHC (Source Flow)
+# Image-to-Image with PixelGen (JiT_I2I XL ~671M params, pretrained from ImageNet)
+# Source flow: interpolates H&E -> IHC instead of noise -> IHC
+
 seed_everything: 42
 torch_hub_dir: null
 huggingface_cache_dir: null
@@ -23,10 +26,8 @@ trainer:
       experiment: null
       prefix: ''
       checkpoint_name: null
-      add_file_policy: mutable
       entity: null
-      notes: Virtual staining H&E->IHC on MIST er with JiT_I2I XL pretrained from
-        PixelGen_XL_80ep. FM only loss. Source flow (H&E->IHC).
+      notes: 'Virtual staining H&E->IHC on MIST er with JiT_I2I XL pretrained from PixelGen_XL_80ep. FM only loss. Source flow (H&E->IHC).'
       tags:
       - mist
       - er
@@ -76,7 +77,7 @@ trainer:
   min_steps: null
   max_time: null
   limit_train_batches: null
-  limit_val_batches: 30.0
+  limit_val_batches: 30
   limit_test_batches: null
   limit_predict_batches: null
   overfit_batches: 0.0
@@ -102,7 +103,6 @@ trainer:
   sync_batchnorm: false
   reload_dataloaders_every_n_epochs: 0
   default_root_dir: ./mist_er_workdirs
-  enable_autolog_hparams: true
   model_registry: null
 model:
   vae:
@@ -153,13 +153,11 @@ model:
       t_eps: 0.05
       lpips_weight: 0.0
       dino_weight: 0.0
-      encoder_percept_weight: null
-      encoder_type: dino
-      encoder_layers: null
       percept_t_threshold: 0.3
       noise_scale: 1.0
       patch_size: 16
-      percept_ratio: 1.0
+      null_condition_p: 0.0
+      # DAB stain-aware loss
       dab_weight: 0.0
       dab_patch_sizes:
       - 16
@@ -170,8 +168,8 @@ model:
       dab_hist_weight: 1.0
       dab_fod_threshold: 0.15
       dab_weight_alpha: 5.0
+      # Source flow: interpolate H&E -> IHC instead of noise -> IHC
       source_flow: true
-      null_condition_p: 0.0
   diffusion_sampler:
     class_path: src.diffusion.flow_matching.sampling.EulerSamplerJiT
     init_args:
@@ -220,7 +218,6 @@ data:
       resolution: 256
       crop_size: 512
       random_flip: true
-      augment_he: false
   eval_dataset:
     class_path: src.data.dataset.mist.MISTValDataset
     init_args:
@@ -240,4 +237,3 @@ data:
 tags:
   exp: MIST_ER_I2I_XL_pretrained_FMonly_sourceflow
 ckpt_path: null
-weights_only: null

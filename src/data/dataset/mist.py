@@ -27,12 +27,21 @@ class MISTTrainDataset(Dataset):
     
     Files in trainA and trainB must have matching filenames.
     """
-    def __init__(self, root, resolution=256, crop_size=512, random_flip=True):
+    def __init__(self, root, resolution=256, crop_size=512, random_flip=True, augment_he=False):
         super().__init__()
         self.root = root
         self.resolution = resolution
         self.crop_size = crop_size
         self.random_flip = random_flip
+        self.augment_he = augment_he
+
+        # H&E-only augmentations (applied AFTER geometric transforms, BEFORE tensor conversion)
+        # IHC target is NOT augmented to preserve DAB stain signal for DAB loss.
+        if augment_he:
+            self.color_jitter = T.ColorJitter(
+                brightness=0.3, contrast=0.3, saturation=0.2, hue=0.02
+            )
+            self.gaussian_blur = T.GaussianBlur(kernel_size=5, sigma=(0.1, 2.0))
 
         self.dir_A = os.path.join(root, 'trainA')
         self.dir_B = os.path.join(root, 'trainB')
@@ -91,6 +100,13 @@ class MISTTrainDataset(Dataset):
             if angle != 0:
                 img_A = TF.rotate(img_A, angle)
                 img_B = TF.rotate(img_B, angle)
+
+        # H&E-only color augmentations (after geometry, before tensor conversion)
+        # Not applied to IHC target to preserve DAB stain signal for DAB loss
+        if self.augment_he:
+            img_A = self.color_jitter(img_A)
+            if random.random() < 0.3:
+                img_A = self.gaussian_blur(img_A)
 
         # Convert to tensor [0, 1]
         raw_A = to_tensor(img_A)  # H&E raw [0,1]

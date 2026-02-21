@@ -14,5 +14,8 @@ tensorboard
 einops
 lpips
 torchmetrics
+pytorch_msssim
+scikit-learn
+scipy
 webdataset
 pyarrow

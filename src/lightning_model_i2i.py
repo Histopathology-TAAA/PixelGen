@@ -25,6 +25,7 @@ from src.diffusion.base.sampling import BaseSampler
 from src.diffusion.base.training import BaseTrainer
 from src.utils.no_grad import no_grad, filter_nograd_tensors
 from src.utils.copy import copy_params
+from src.eval.metrics import compute_fid, compute_kid, compute_ssim_batch, compute_psnr_batch, compute_mad_batch
 
 torch._functorch.config.donated_buffer = False
 
@@ -46,6 +47,7 @@ class I2ILightningModel(pl.LightningModule):
         lr_scheduler: LRSchedulerCallable = None,
         eval_original_model: bool = False,
         num_vis_samples: int = 8,
+        source_flow: bool = False,
     ):
         super().__init__()
         self.vae = vae
@@ -59,12 +61,14 @@ class I2ILightningModel(pl.LightningModule):
         self.lr_scheduler = lr_scheduler
         self.eval_original_model = eval_original_model
         self.num_vis_samples = num_vis_samples
+        self.source_flow = source_flow
 
         self._strict_loading = False
 
         # Validation accumulators
         self._val_ssim_scores = []
         self._val_psnr_scores = []
+        self._val_mad_scores = []
         self._val_vis_samples = []  # For W&B visualization
         self._val_gen_images = []   # For FID
         self._val_gt_images = []    # For FID
@@ -113,6 +117,7 @@ class I2ILightningModel(pl.LightningModule):
         self.ema_denoiser.to(torch.float32)
         self._val_ssim_scores = []
         self._val_psnr_scores = []
+        self._val_mad_scores = []
         self._val_vis_samples = []
         self._val_gen_images = []
         self._val_gt_images = []
@@ -162,15 +167,15 @@ class I2ILightningModel(pl.LightningModule):
         self.log_dict(loss, prog_bar=True, on_step=True, sync_dist=False)
         return loss["loss"]
 
-    def _generate_samples(self, noise, condition_image):
-        """Generate IHC samples from noise and H&E condition. No CFG — single forward pass."""
+    def _generate_samples(self, noise_or_source, condition_image):
+        """Generate IHC samples. Starting point is noise (default) or H&E (source_flow)."""
         if self.eval_original_model:
             net = self.denoiser
         else:
             net = self.ema_denoiser
 
         # No uncondition needed — sampler runs single forward pass
-        samples = self.diffusion_sampler(net, noise, condition_image)
+        samples = self.diffusion_sampler(net, noise_or_source, condition_image)
         samples = self.vae.decode(samples)
         return samples
 
@@ -182,7 +187,13 @@ class I2ILightningModel(pl.LightningModule):
         else:
             condition_images = metadata["condition_image"].to(xT.device)
 
-        samples = self._generate_samples(xT, condition_images)
+        # For source_flow, start from H&E condition instead of noise
+        if self.source_flow:
+            start = condition_images
+        else:
+            start = xT
+
+        samples = self._generate_samples(start, condition_images)
         samples = fp2uint8(samples)
         return samples
 
@@ -203,17 +214,24 @@ class I2ILightningModel(pl.LightningModule):
 
         # Generate samples
         with torch.no_grad():
-            gen_samples = self._generate_samples(xT, condition_images)
+            # For source_flow, start from H&E condition instead of noise
+            if self.source_flow:
+                start = condition_images
+            else:
+                start = xT
+            gen_samples = self._generate_samples(start, condition_images)
 
         # Convert generated to [0, 1] range
         gen_samples_01 = (gen_samples.float().clamp(-1, 1) + 1) / 2
 
-        # Compute SSIM and PSNR per sample
-        ssim_vals = self._compute_ssim_batch(gen_samples_01, gt_images_raw)
-        psnr_vals = self._compute_psnr_batch(gen_samples_01, gt_images_raw)
+        # Compute SSIM, PSNR, and MAD per sample (using PSPStain-style pytorch_msssim for SSIM)
+        ssim_vals = compute_ssim_batch(gen_samples_01, gt_images_raw)
+        psnr_vals = compute_psnr_batch(gen_samples_01, gt_images_raw)
+        mad_vals = compute_mad_batch(gen_samples_01, gt_images_raw)
 
         self._val_ssim_scores.extend(ssim_vals)
         self._val_psnr_scores.extend(psnr_vals)
+        self._val_mad_scores.extend(mad_vals)
 
         # Accumulate for FID (as uint8)
         gen_uint8 = (gen_samples_01 * 255).clamp(0, 255).to(torch.uint8)
@@ -235,7 +253,7 @@ class I2ILightningModel(pl.LightningModule):
         return gen_uint8
 
     def on_validation_epoch_end(self) -> None:
-        # Log mean SSIM and PSNR
+        # Log mean SSIM, PSNR, and MAD
         if self._val_ssim_scores:
             mean_ssim = sum(self._val_ssim_scores) / len(self._val_ssim_scores)
             self.log("val/ssim", mean_ssim, prog_bar=True, sync_dist=True)
@@ -244,13 +262,38 @@ class I2ILightningModel(pl.LightningModule):
             mean_psnr = sum(self._val_psnr_scores) / len(self._val_psnr_scores)
             self.log("val/psnr", mean_psnr, prog_bar=True, sync_dist=True)
 
-        # Compute and log FID
+        if self._val_mad_scores:
+            mean_mad = sum(self._val_mad_scores) / len(self._val_mad_scores)
+            self.log("val/mad", mean_mad, prog_bar=True, sync_dist=True)
+
+        # Compute and log FID & KID (using PSPStain evaluation code)
         if self._val_gen_images and self._val_gt_images:
-            try:
-                fid_score = self._compute_fid()
-                self.log("val/fid", fid_score, prog_bar=True, sync_dist=True)
-            except Exception as e:
-                print(f"[Warning] FID computation failed: {e}")
+            gen_images = torch.cat(self._val_gen_images, dim=0)
+            gt_images = torch.cat(self._val_gt_images, dim=0)
+
+            if gen_images.shape[0] >= 2:
+                eval_device = "cuda" if torch.cuda.is_available() else "cpu"
+
+                # FID (PSPStain: fid.py → calculate_fid_given_paths)
+                try:
+                    fid_score = compute_fid(
+                        gen_images, gt_images,
+                        batch_size=50, dims=2048, device=eval_device,
+                    )
+                    self.log("val/fid", fid_score, prog_bar=True, sync_dist=True)
+                except Exception as e:
+                    print(f"[Warning] FID computation failed: {e}")
+
+                # KID (PSPStain: kid_score.py → calculate_kid_given_paths)
+                try:
+                    kid_mean, kid_std = compute_kid(
+                        gen_images, gt_images,
+                        batch_size=50, dims=2048, device=eval_device,
+                    )
+                    self.log("val/kid_mean", kid_mean, prog_bar=True, sync_dist=True)
+                    self.log("val/kid_std", kid_std, prog_bar=False, sync_dist=True)
+                except Exception as e:
+                    print(f"[Warning] KID computation failed: {e}")
 
         # Log visualization samples to W&B
         if self._val_vis_samples and self.logger is not None:
@@ -259,53 +302,10 @@ class I2ILightningModel(pl.LightningModule):
         # Clear accumulators
         self._val_ssim_scores = []
         self._val_psnr_scores = []
+        self._val_mad_scores = []
         self._val_vis_samples = []
         self._val_gen_images = []
         self._val_gt_images = []
-
-    def _compute_ssim_batch(self, pred, target):
-        """Compute SSIM for a batch. pred and target are [0,1] float tensors."""
-        from torchmetrics.functional.image import structural_similarity_index_measure
-        scores = []
-        for i in range(pred.shape[0]):
-            ssim = structural_similarity_index_measure(
-                pred[i:i+1], target[i:i+1], data_range=1.0
-            )
-            scores.append(ssim.item())
-        return scores
-
-    def _compute_psnr_batch(self, pred, target):
-        """Compute PSNR for a batch. pred and target are [0,1] float tensors."""
-        from torchmetrics.functional.image import peak_signal_noise_ratio
-        scores = []
-        for i in range(pred.shape[0]):
-            psnr = peak_signal_noise_ratio(
-                pred[i:i+1], target[i:i+1], data_range=1.0
-            )
-            scores.append(psnr.item())
-        return scores
-
-    def _compute_fid(self):
-        """Compute FID between generated and ground truth images."""
-        from torchmetrics.image.fid import FrechetInceptionDistance
-        fid = FrechetInceptionDistance(feature=2048, normalize=True)
-        fid = fid.to("cpu")
-
-        gen_images = torch.cat(self._val_gen_images, dim=0)
-        gt_images = torch.cat(self._val_gt_images, dim=0)
-
-        # FID needs at least 2 samples
-        if gen_images.shape[0] < 2:
-            return float("nan")
-
-        # Convert uint8 to float [0,1] for torchmetrics FID with normalize=True
-        gen_float = gen_images.float() / 255.0
-        gt_float = gt_images.float() / 255.0
-
-        fid.update(gt_float, real=True)
-        fid.update(gen_float, real=False)
-        fid_score = fid.compute().item()
-        return fid_score
 
     def _log_wandb_visualizations(self):
         """Log 8 side-by-side visualization samples to W&B."""

@@ -42,9 +42,9 @@ class I2IREPATrainer(BaseTrainer):
     
     Losses:
     - Flow matching (v-prediction from x-prediction)
-    - REPA (cosine alignment with DINO features)
+    - REPA (cosine alignment with encoder features: DINO or Virchow)
     - LPIPS perceptual loss
-    - DINO perceptual loss
+    - Encoder perceptual loss
     - Noise gating for perceptual losses
     """
     def __init__(
@@ -64,10 +64,23 @@ class I2IREPATrainer(BaseTrainer):
             t_eps=0.05,
             lpips_weight: float = 0.1,
             dino_weight: float = 0.01,
+            encoder_percept_weight: float = None,
+            encoder_type: str = "dino",
+            encoder_layers: list = None,
             percept_t_threshold: float = 0.3,
             noise_scale: float = 1.0,
             patch_size: int = 16,
             percept_ratio: float = 1.0,
+            # DAB stain-aware loss parameters
+            dab_weight: float = 0.0,
+            dab_patch_sizes: list = None,
+            dab_use_focal: bool = True,
+            dab_focal_alpha: float = 1.8,
+            dab_hist_weight: float = 1.0,
+            dab_fod_threshold: float = 0.15,
+            dab_weight_alpha: float = 5.0,
+            # Source flow: interpolate H&E -> IHC instead of noise -> IHC
+            source_flow: bool = False,
             *args,
             **kwargs
     ):
@@ -95,12 +108,37 @@ class I2IREPATrainer(BaseTrainer):
         self.P_std = P_std
         self.t_eps = t_eps
         self.lpips_weight = lpips_weight
-        self.dino_weight = dino_weight
+        self.dino_weight = dino_weight  # backward-compatible config key
+        self.encoder_percept_weight = dino_weight if encoder_percept_weight is None else encoder_percept_weight
+        self.encoder_type = encoder_type.lower()
+        if self.encoder_type not in {"dino", "virchow"}:
+            raise ValueError(f"Unsupported encoder_type='{encoder_type}'. Use 'dino' or 'virchow'.")
         self.percept_t_threshold = percept_t_threshold
-        self.dino_layers = [11]
+        if encoder_layers is not None:
+            self.encoder_layers = encoder_layers
+        elif self.encoder_type == "dino":
+            self.encoder_layers = [11]
+        else:
+            self.encoder_layers = [0]
+        self.dino_layers = self.encoder_layers  # backward-compatible attribute name
         self.noise_scale = noise_scale
         self.percept_ratio = percept_ratio
         self.cached_percept_weight = 1.0
+        self.source_flow = source_flow
+
+        # DAB stain-aware loss
+        self.dab_weight = dab_weight
+        if dab_weight > 0:
+            from src.diffusion.flow_matching.dap_loss import CombinedDABLoss
+            self.dab_loss_fn = CombinedDABLoss(
+                patch_sizes=dab_patch_sizes or [16, 32, 64],
+                use_focal=dab_use_focal,
+                focal_alpha=dab_focal_alpha,
+                hist_weight=dab_hist_weight,
+                fod_threshold=dab_fod_threshold,
+                weight_alpha=dab_weight_alpha,
+            )
+            freeze_model(self.dab_loss_fn)  # no trainable params, but freeze for safety
 
     def _calculate_adaptive_weight(self, rec_loss, g_loss, last_layer):
         rec_grads = torch.autograd.grad(rec_loss, last_layer, retain_graph=True)[0]
@@ -109,11 +147,11 @@ class I2IREPATrainer(BaseTrainer):
         d_weight = torch.clamp(d_weight, 0.0, 100.0).detach()
         return d_weight
 
-    def compute_dino_loss(self, pred_dino_feats, gt_dino_feats, percept_mask=None):
+    def compute_encoder_loss(self, pred_feats, gt_feats, percept_mask=None):
         cos_losses = {}
         final_cos_loss = 0
-        batch_size = pred_dino_feats[0].shape[0]
-        for i, (pred_feat, gt_feat) in enumerate(zip(pred_dino_feats, gt_dino_feats)):
+        batch_size = pred_feats[0].shape[0]
+        for i, (pred_feat, gt_feat) in enumerate(zip(pred_feats, gt_feats)):
             if percept_mask is not None:
                 percept_mask_r = percept_mask.reshape(batch_size, 1, 1)
                 cos_sim = (torch.nn.functional.cosine_similarity(pred_feat, gt_feat, dim=-1) * percept_mask_r).mean(dim=(1, 2))
@@ -122,9 +160,15 @@ class I2IREPATrainer(BaseTrainer):
             else:
                 cos_loss = 1 - torch.nn.functional.cosine_similarity(pred_feat, gt_feat, dim=-1).view(batch_size, -1).mean()
             cos_losses[f"inter_cos_{i}"] = cos_loss
+            cos_losses[f"{self.encoder_type}_inter_cos_{i}"] = cos_loss
             final_cos_loss += cos_loss
-        cos_losses["dino_percept_loss"] = final_cos_loss / len(pred_dino_feats)
+        encoder_percept_loss = final_cos_loss / len(pred_feats)
+        cos_losses["encoder_percept_loss"] = encoder_percept_loss
+        cos_losses["dino_percept_loss"] = encoder_percept_loss  # backward-compatible logging key
         return cos_losses
+
+    def compute_dino_loss(self, pred_dino_feats, gt_dino_feats, percept_mask=None):
+        return self.compute_encoder_loss(pred_dino_feats, gt_dino_feats, percept_mask)
 
     def compute_lpips_loss(self, pred_img, x, percept_mask=None):
         batch_size, _, height, width = pred_img.shape
@@ -160,11 +204,16 @@ class I2IREPATrainer(BaseTrainer):
         t = time_shift_fn(base_t, self.timeshift)
 
         # Forward diffusion
-        noise = self.noise_scale * torch.randn_like(x)
+        if self.source_flow:
+            # Flow from H&E -> IHC: interpolate between condition and target
+            source = condition_image
+        else:
+            # Flow from noise -> IHC: interpolate between noise and target
+            source = self.noise_scale * torch.randn_like(x)
         alpha = self.scheduler.alpha(t)
         sigma = self.scheduler.sigma(t)
 
-        x_t = alpha * x + noise * sigma
+        x_t = alpha * x + source * sigma
 
         # v target (x-prediction -> v)
         v_t = (x - x_t) / (1 - t.view(-1, 1, 1, 1)).clamp_min(self.t_eps)
@@ -177,9 +226,9 @@ class I2IREPATrainer(BaseTrainer):
         # Compute v from x-prediction
         out = (pred_img - x_t) / (1 - t.view(-1, 1, 1, 1)).clamp_min(self.t_eps)
 
-        # REPA: align with DINO features of target image
+        # REPA: align with encoder features of target image
         with torch.no_grad():
-            dst_features = self.encoder.get_intermediate_feats(raw_images, n=self.dino_layers)
+            dst_features = self.encoder.get_intermediate_feats(raw_images, n=self.encoder_layers)
         cos_sim = torch.nn.functional.cosine_similarity(src_feature, dst_features[-1], dim=-1)
         cos_loss = 1 - cos_sim
 
@@ -196,14 +245,22 @@ class I2IREPATrainer(BaseTrainer):
         # LPIPS loss (compare predicted clean image with target)
         lpips_loss = self.compute_lpips_loss(pred_img, x, percept_mask)
 
-        # DINO perceptual loss (compare DINO features of predicted vs target)
-        raw_pred_img = (pred_img + 1) / 2  # Convert to [0,1] for DINO
-        pred_feats = self.encoder.get_intermediate_feats(raw_pred_img, n=self.dino_layers)
-        dino_losses = self.compute_dino_loss(pred_feats, dst_features, percept_mask)
+        # Encoder perceptual loss (compare encoder features of predicted vs target)
+        raw_pred_img = (pred_img + 1) / 2  # Convert to [0,1] for encoder
+        pred_feats = self.encoder.get_intermediate_feats(raw_pred_img, n=self.encoder_layers)
+        encoder_losses = self.compute_encoder_loss(pred_feats, dst_features, percept_mask)
+
+        # DAB stain-aware loss (operates on [0,1] pixel-space images)
+        if self.dab_weight > 0:
+            # Use float32 for stain deconvolution (log10, matrix inv need precision)
+            dab_losses = self.dab_loss_fn(raw_pred_img.float(), raw_images.float())
+            dab_loss = dab_losses['total']
+        else:
+            dab_loss = torch.tensor(0.0, device=x.device)
 
         # Combine losses
         rec_loss = fm_loss.mean()
-        percept_loss = self.lpips_weight * lpips_loss + self.dino_weight * dino_losses["dino_percept_loss"]
+        percept_loss = self.lpips_weight * lpips_loss + self.encoder_percept_weight * encoder_losses["encoder_percept_loss"]
 
         # Adaptive weight balancing (after warmup)
         if current_step >= 10000 and current_step % 50 == 0:
@@ -211,16 +268,26 @@ class I2IREPATrainer(BaseTrainer):
             percept_weight = self._calculate_adaptive_weight(rec_loss, percept_loss, last_layer)
             self.cached_percept_weight = 0.8 * self.cached_percept_weight + 0.2 * percept_weight
 
-        final_loss = fm_loss.mean() + self.feat_loss_weight * cos_loss.mean() + self.percept_ratio * self.cached_percept_weight * percept_loss
+        final_loss = (
+            fm_loss.mean()
+            + self.feat_loss_weight * cos_loss.mean()
+            + self.percept_ratio * self.cached_percept_weight * percept_loss
+            + self.dab_weight * dab_loss
+        )
 
         out = dict(
             fm_loss=fm_loss.mean(),
             cos_loss=cos_loss.mean(),
             percept_weight=self.cached_percept_weight,
+            encoder_percept_weight=self.encoder_percept_weight,
             lpips_loss=lpips_loss,
+            dab_loss=dab_loss,
             loss=final_loss,
         )
-        out.update(dino_losses)
+        out.update(encoder_losses)
+        if self.dab_weight > 0:
+            out['dab_patch'] = dab_losses['patch']
+            out['dab_hist'] = dab_losses['histogram']
         return out
 
     def __call__(self, net, ema_net, solver, x, condition, uncondition=None, metadata=None):

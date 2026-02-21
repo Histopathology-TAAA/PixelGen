@@ -1,4 +1,4 @@
-# MIST Ki67 Virtual Staining: H&E -> IHC — UNet baseline
+# MIST Ki67 Virtual Staining: H&E -> IHC — UNet + DAB stain-aware loss + H&E augmentations
 # UNet_I2I_B (~89M params) trained from scratch, no CFG, 6ch input
 seed_everything: 42
 torch_hub_dir: null
@@ -12,7 +12,7 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
-      name: MIST_Ki67_I2I_UNet_B
+      name: MIST_Ki67_I2I_UNet
       save_dir: .
       version: null
       offline: false
@@ -25,7 +25,7 @@ trainer:
       prefix: ''
       checkpoint_name: null
       entity: null
-      notes: 'UNet_I2I_B (~89M) from scratch. No CFG. REPA+LPIPS+DINO losses. 6ch input (3 noisy IHC + 3 H&E).'
+      notes: 'UNet_I2I (base64, ~25M) from scratch. No CFG. FM losses. 6ch input (3 noisy IHC + 3 H&E). Reduced base_channels 128->64 + steeper mults (1,2,4,8) to cut FLOPs ~3x.'
       tags:
       - mist
       - ki67
@@ -115,25 +115,27 @@ model:
       input_size: 256
       in_channels: 3
       cond_channels: 3
-      base_channels: 128
+      base_channels: 64
       channel_mult:
       - 1
       - 2
-      - 3
       - 4
+      - 8
       num_res_blocks: 2
       attention_resolutions:
       - 32
+      - 16
       num_heads: 8
       dropout: 0.1
       repa_patch_size: 16
+      stem_stride: 2
   diffusion_trainer:
     class_path: src.diffusion.flow_matching.training_i2i_repa.I2IREPATrainer
     init_args:
       scheduler:
         class_path: src.diffusion.flow_matching.scheduling.LinearScheduler
       loss_weight_fn: src.diffusion.flow_matching.training_i2i_repa.constant
-      feat_loss_weight: 0.3
+      feat_loss_weight: 0.0
       lognorm_t: true
       timeshift: 1.0
       encoder:
@@ -148,12 +150,23 @@ model:
       P_mean: -0.8
       P_std: 0.8
       t_eps: 0.05
-      lpips_weight: 0.1
-      dino_weight: 0.01
+      lpips_weight: 0.0
+      dino_weight: 0.0
       percept_t_threshold: 0.3
       noise_scale: 1.0
       patch_size: 16
       null_condition_p: 0.0
+      # DAB stain-aware loss
+      dab_weight: 0.0
+      dab_patch_sizes:
+      - 16
+      - 32
+      - 64
+      dab_use_focal: true
+      dab_focal_alpha: 1.8
+      dab_hist_weight: 1.0
+      dab_fod_threshold: 0.15
+      dab_weight_alpha: 5.0
   diffusion_sampler:
     class_path: src.diffusion.flow_matching.sampling.EulerSamplerJiT
     init_args:
@@ -201,6 +214,7 @@ data:
       resolution: 256
       crop_size: 512
       random_flip: true
+      augment_he: false
   eval_dataset:
     class_path: src.data.dataset.mist.MISTValDataset
     init_args:
@@ -218,5 +232,5 @@ data:
   pred_batch_size: 8
   pred_num_workers: 6
 tags:
-  exp: MIST_Ki67_I2I_UNet_B
+  exp: MIST_Ki67_I2I_UNet_Faster
 ckpt_path: null

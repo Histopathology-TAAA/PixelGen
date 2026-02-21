@@ -1,4 +1,5 @@
-# lightning.pytorch==2.6.1
+# MIST Ki67 Virtual Staining: H&E -> IHC — UNet + DAB stain-aware loss + H&E augmentations
+# UNet_I2I_B (~89M params) trained from scratch, no CFG, 6ch input
 seed_everything: 42
 torch_hub_dir: null
 huggingface_cache_dir: null
@@ -11,29 +12,27 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
-      name: MIST_ER_I2I_XL_pretrained_FMonly_sourceflow
+      name: MIST_Ki67_I2I_UNet_DAB
       save_dir: .
       version: null
       offline: false
       dir: null
       id: null
       anonymous: null
-      project: virtual-stain-er
+      project: virtual-stain
       log_model: false
       experiment: null
       prefix: ''
       checkpoint_name: null
-      add_file_policy: mutable
       entity: null
-      notes: Virtual staining H&E->IHC on MIST er with JiT_I2I XL pretrained from
-        PixelGen_XL_80ep. FM only loss. Source flow (H&E->IHC).
+      notes: 'UNet_I2I_B (~89M) from scratch. No CFG. FM+DAB losses. 6ch input (3 noisy IHC + 3 H&E).'
       tags:
       - mist
-      - er
+      - ki67
       - virtual-staining
       - i2i
-      - pretrained-xl
-      - source-flow
+      - unet
+      - dab-loss
       config: null
       config_exclude_keys: null
       config_include_keys: null
@@ -64,7 +63,7 @@ trainer:
       save_weights_only: false
       mode: min
       auto_insert_metric_name: true
-      every_n_train_steps: 10000
+      every_n_train_steps: 5000
       train_time_interval: null
       every_n_epochs: null
       save_on_train_epoch_end: null
@@ -72,11 +71,11 @@ trainer:
   fast_dev_run: false
   max_epochs: null
   min_epochs: null
-  max_steps: 50000
+  max_steps: 40000
   min_steps: null
   max_time: null
   limit_train_batches: null
-  limit_val_batches: 30.0
+  limit_val_batches: 30
   limit_test_batches: null
   limit_predict_batches: null
   overfit_batches: 0.0
@@ -101,8 +100,7 @@ trainer:
   - class_path: src.plugins.bd_env.BDEnvironment
   sync_batchnorm: false
   reload_dataloaders_every_n_epochs: 0
-  default_root_dir: ./mist_er_workdirs
-  enable_autolog_hparams: true
+  default_root_dir: ./mist_ki67_workdirs
   model_registry: null
 model:
   vae:
@@ -113,23 +111,25 @@ model:
   conditioner:
     class_path: src.models.conditioner.image.ImageConditioner
   denoiser:
-    class_path: src.models.transformer.JiT_I2I.JiT_I2I
+    class_path: src.models.unet.UNet_I2I.UNet_I2I
     init_args:
       input_size: 256
-      patch_size: 16
       in_channels: 3
       cond_channels: 3
-      hidden_size: 1152
-      depth: 28
-      num_heads: 16
-      mlp_ratio: 4.0
-      attn_drop: 0.0
-      proj_drop: 0.1
-      bottleneck_dim: 128
-      use_bottleneck: false
-      use_compile: false
-      weight_path: /scratch/exp1/a.ayman/diff/PixelGen/PixelGen_XL_80ep.ckpt
-      load_ema: true
+      base_channels: 64
+      channel_mult:
+      - 1
+      - 2
+      - 4
+      - 8
+      num_res_blocks: 2
+      attention_resolutions:
+      - 32
+      - 16
+      num_heads: 8
+      dropout: 0.1
+      repa_patch_size: 16
+      stem_stride: 2
   diffusion_trainer:
     class_path: src.diffusion.flow_matching.training_i2i_repa.I2IREPATrainer
     init_args:
@@ -144,23 +144,21 @@ model:
         init_args:
           weight_path: ~/.cache/torch/hub/checkpoints/dinov2_vitb14_pretrain.pth
           base_patch_size: 16
-      align_layer: 8
-      proj_denoiser_dim: 1152
-      proj_hidden_dim: 1152
+      align_layer: 0
+      proj_denoiser_dim: 512
+      proj_hidden_dim: 512
       proj_encoder_dim: 768
       P_mean: -0.8
       P_std: 0.8
       t_eps: 0.05
       lpips_weight: 0.0
       dino_weight: 0.0
-      encoder_percept_weight: null
-      encoder_type: dino
-      encoder_layers: null
       percept_t_threshold: 0.3
       noise_scale: 1.0
       patch_size: 16
-      percept_ratio: 1.0
-      dab_weight: 0.0
+      null_condition_p: 0.0
+      # DAB stain-aware loss
+      dab_weight: 0.1
       dab_patch_sizes:
       - 16
       - 32
@@ -170,8 +168,6 @@ model:
       dab_hist_weight: 1.0
       dab_fod_threshold: 0.15
       dab_weight_alpha: 5.0
-      source_flow: true
-      null_condition_p: 0.0
   diffusion_sampler:
     class_path: src.diffusion.flow_matching.sampling.EulerSamplerJiT
     init_args:
@@ -211,12 +207,11 @@ model:
   lr_scheduler: null
   eval_original_model: true
   num_vis_samples: 8
-  source_flow: true
 data:
   train_dataset:
     class_path: src.data.dataset.mist.MISTTrainDataset
     init_args:
-      root: /scratch/exp1/a.ayman/diff/data/MIST/ER/TrainValAB
+      root: /scratch/exp1/a.ayman/diff/data/MIST/Ki67/TrainValAB
       resolution: 256
       crop_size: 512
       random_flip: true
@@ -224,7 +219,7 @@ data:
   eval_dataset:
     class_path: src.data.dataset.mist.MISTValDataset
     init_args:
-      root: /scratch/exp1/a.ayman/diff/data/MIST/ER/TrainValAB
+      root: /scratch/exp1/a.ayman/diff/data/MIST/Ki67/TrainValAB
       resolution: 256
       crop_size: 512
       noise_scale: 1.0
@@ -238,6 +233,5 @@ data:
   pred_batch_size: 8
   pred_num_workers: 6
 tags:
-  exp: MIST_ER_I2I_XL_pretrained_FMonly_sourceflow
+  exp: MIST_Ki67_I2I_UNet_DAB
 ckpt_path: null
-weights_only: null

@@ -1,4 +1,6 @@
-# lightning.pytorch==2.6.1
+# MIST Ki67 Virtual Staining: H&E -> IHC
+# Image-to-Image with PixelGen (JiT_I2I XL ~671M params, pretrained from ImageNet)
+
 seed_everything: 42
 torch_hub_dir: null
 huggingface_cache_dir: null
@@ -11,29 +13,26 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
-      name: MIST_ER_I2I_XL_pretrained_FMonly_sourceflow
+      name: MIST_Ki67_I2I_XL_pretrained_virchow_lpips
       save_dir: .
       version: null
       offline: false
       dir: null
       id: null
       anonymous: null
-      project: virtual-stain-er
+      project: virtual-stain
       log_model: false
       experiment: null
       prefix: ''
       checkpoint_name: null
-      add_file_policy: mutable
       entity: null
-      notes: Virtual staining H&E->IHC on MIST er with JiT_I2I XL pretrained from
-        PixelGen_XL_80ep. FM only loss. Source flow (H&E->IHC).
+      notes: 'Virtual staining H&E->IHC on MIST Ki67 with JiT_I2I XL pretrained from PixelGen_XL_80ep. FM+Virchow2+LPIPS loss.'
       tags:
       - mist
-      - er
+      - ki67
       - virtual-staining
       - i2i
       - pretrained-xl
-      - source-flow
       config: null
       config_exclude_keys: null
       config_include_keys: null
@@ -76,7 +75,7 @@ trainer:
   min_steps: null
   max_time: null
   limit_train_batches: null
-  limit_val_batches: 30.0
+  limit_val_batches: 30
   limit_test_batches: null
   limit_predict_batches: null
   overfit_batches: 0.0
@@ -87,7 +86,7 @@ trainer:
   enable_checkpointing: null
   enable_progress_bar: null
   enable_model_summary: null
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 4
   gradient_clip_val: 1.0
   gradient_clip_algorithm: null
   deterministic: null
@@ -101,8 +100,7 @@ trainer:
   - class_path: src.plugins.bd_env.BDEnvironment
   sync_batchnorm: false
   reload_dataloaders_every_n_epochs: 0
-  default_root_dir: ./mist_er_workdirs
-  enable_autolog_hparams: true
+  default_root_dir: ./mist_ki67_workdirs
   model_registry: null
 model:
   vae:
@@ -136,30 +134,32 @@ model:
       scheduler:
         class_path: src.diffusion.flow_matching.scheduling.LinearScheduler
       loss_weight_fn: src.diffusion.flow_matching.training_i2i_repa.constant
-      feat_loss_weight: 0.0
+      feat_loss_weight: 0.2
       lognorm_t: true
       timeshift: 1.0
       encoder:
-        class_path: src.models.encoder.DINOv2
+        class_path: src.models.virchow.Virchow2Encoder
         init_args:
-          weight_path: ~/.cache/torch/hub/checkpoints/dinov2_vitb14_pretrain.pth
-          base_patch_size: 16
+          use_patch_tokens: true
+          freeze: true
       align_layer: 8
       proj_denoiser_dim: 1152
       proj_hidden_dim: 1152
-      proj_encoder_dim: 768
+      proj_encoder_dim: 1280
       P_mean: -0.8
       P_std: 0.8
       t_eps: 0.05
-      lpips_weight: 0.0
-      dino_weight: 0.0
-      encoder_percept_weight: null
-      encoder_type: dino
-      encoder_layers: null
+      lpips_weight: 0.05
+      dino_weight: 0.01
+      encoder_percept_weight: 0.01
+      encoder_type: 'virchow'
+      encoder_layers:
+      - 0
       percept_t_threshold: 0.3
       noise_scale: 1.0
       patch_size: 16
-      percept_ratio: 1.0
+      null_condition_p: 0.0
+      # DAB stain-aware loss
       dab_weight: 0.0
       dab_patch_sizes:
       - 16
@@ -170,8 +170,6 @@ model:
       dab_hist_weight: 1.0
       dab_fod_threshold: 0.15
       dab_weight_alpha: 5.0
-      source_flow: true
-      null_condition_p: 0.0
   diffusion_sampler:
     class_path: src.diffusion.flow_matching.sampling.EulerSamplerJiT
     init_args:
@@ -211,33 +209,30 @@ model:
   lr_scheduler: null
   eval_original_model: true
   num_vis_samples: 8
-  source_flow: true
 data:
   train_dataset:
     class_path: src.data.dataset.mist.MISTTrainDataset
     init_args:
-      root: /scratch/exp1/a.ayman/diff/data/MIST/ER/TrainValAB
+      root: /scratch/exp1/a.ayman/diff/data/MIST/Ki67/TrainValAB
       resolution: 256
       crop_size: 512
       random_flip: true
-      augment_he: false
   eval_dataset:
     class_path: src.data.dataset.mist.MISTValDataset
     init_args:
-      root: /scratch/exp1/a.ayman/diff/data/MIST/ER/TrainValAB
+      root: /scratch/exp1/a.ayman/diff/data/MIST/Ki67/TrainValAB
       resolution: 256
       crop_size: 512
       noise_scale: 1.0
       seed: 42
   pred_dataset: null
-  train_batch_size: 8
+  train_batch_size: 4
   train_num_workers: 6
   train_prefetch_factor: 4
-  eval_batch_size: 8
+  eval_batch_size: 4
   eval_num_workers: 6
-  pred_batch_size: 8
+  pred_batch_size: 4
   pred_num_workers: 6
 tags:
-  exp: MIST_ER_I2I_XL_pretrained_FMonly_sourceflow
+  exp: MIST_Ki67_I2I_XL_pretrained_virchow_lpips
 ckpt_path: null
-weights_only: null
