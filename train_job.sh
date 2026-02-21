@@ -20,5 +20,5 @@ source .env
 set +a
 
 hf auth login --token "$HF_TOKEN"
-python main_i2i.py fit --config configs_i2i/mist_ki67_v2_sharp.yaml
-sleep infinity
+python main_i2i.py fit --config configs_i2i/mist_er_pre_fmonly_sourceflow.yaml
+# sleep infinity

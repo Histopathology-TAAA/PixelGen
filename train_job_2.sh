@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=train_v2_sharp
+#SBATCH --job-name=train_v2d
 #SBATCH --output=logs/%j_%x.out
 #SBATCH --error=logs/%j_%x.err
 #SBATCH --time=24:00:00
@@ -20,5 +20,5 @@ source .env
 set +a
 
 hf auth login --token "$HF_TOKEN"
-python main_i2i.py fit --config configs_i2i/mist_ki67_unet.yaml
+python main_i2i.py fit --config configs_i2i/mist_ki67_pre_fm_dab.yaml
 sleep infinity
