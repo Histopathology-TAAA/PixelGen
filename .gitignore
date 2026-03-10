@@ -7,6 +7,7 @@ wandb
 merge_weight.py
 *.pyc
 mist_ki67_workdirs
+mist_er_workdirs
 *.ckpt
 *.pt
 *.pth

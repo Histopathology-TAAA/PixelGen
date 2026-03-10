@@ -81,6 +81,8 @@ class I2IREPATrainer(BaseTrainer):
             dab_weight_alpha: float = 5.0,
             # Source flow: interpolate H&E -> IHC instead of noise -> IHC
             source_flow: bool = False,
+            # Noise added to the H&E source to prevent degenerate [H&E|H&E] inputs
+            source_noise_scale: float = 0.0,
             *args,
             **kwargs
     ):
@@ -125,6 +127,7 @@ class I2IREPATrainer(BaseTrainer):
         self.percept_ratio = percept_ratio
         self.cached_percept_weight = 1.0
         self.source_flow = source_flow
+        self.source_noise_scale = source_noise_scale
 
         # DAB stain-aware loss
         self.dab_weight = dab_weight
@@ -206,7 +209,9 @@ class I2IREPATrainer(BaseTrainer):
         # Forward diffusion
         if self.source_flow:
             # Flow from H&E -> IHC: interpolate between condition and target
-            source = condition_image
+            # Add noise to prevent degenerate [H&E|H&E] input at low-t and
+            # to avoid the model learning a simple color-copy shortcut.
+            source = condition_image + self.source_noise_scale * torch.randn_like(x)
         else:
             # Flow from noise -> IHC: interpolate between noise and target
             source = self.noise_scale * torch.randn_like(x)

@@ -187,9 +187,12 @@ class I2ILightningModel(pl.LightningModule):
         else:
             condition_images = metadata["condition_image"].to(xT.device)
 
-        # For source_flow, start from H&E condition instead of noise
+        # For source_flow, start from H&E condition instead of noise.
+        # Add the same noise used during training so inference matches the
+        # training distribution at t=0 (source = H&E + source_noise_scale * noise).
         if self.source_flow:
-            start = condition_images
+            source_noise_scale = getattr(self.diffusion_trainer, "source_noise_scale", 0.0)
+            start = condition_images + source_noise_scale * torch.randn_like(condition_images)
         else:
             start = xT
 
@@ -214,9 +217,12 @@ class I2ILightningModel(pl.LightningModule):
 
         # Generate samples
         with torch.no_grad():
-            # For source_flow, start from H&E condition instead of noise
+            # For source_flow, start from H&E condition instead of noise.
+            # Add the same noise used during training so inference matches the
+            # training distribution at t=0 (source = H&E + source_noise_scale * noise).
             if self.source_flow:
-                start = condition_images
+                source_noise_scale = getattr(self.diffusion_trainer, "source_noise_scale", 0.0)
+                start = condition_images + source_noise_scale * torch.randn_like(condition_images)
             else:
                 start = xT
             gen_samples = self._generate_samples(start, condition_images)
