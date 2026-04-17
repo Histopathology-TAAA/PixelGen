@@ -143,6 +143,29 @@ class StarDiffPixelGenModel(nn.Module):
             path.blocks = new_blocks
         print("✓ Gradient checkpointing enabled for both paths")
 
+    def rescale_resolution(self, new_input_size):
+        """
+        Rescale both paths to a new input resolution.
+        Interpolates positional embeddings (bicubic) and rebuilds RoPE.
+
+        Call AFTER loading checkpoint weights and BEFORE training.
+
+        Args:
+            new_input_size: Target resolution (e.g. 512 for 512x512)
+        """
+        old_size = self.noise_path.input_size
+        old_tokens = (old_size // self.noise_path.patch_size) ** 2
+        new_tokens = (new_input_size // self.noise_path.patch_size) ** 2
+
+        print(f"🔄 Rescaling StarDiff: {old_size}x{old_size} → {new_input_size}x{new_input_size}")
+        print(f"   Tokens per path: {old_tokens} → {new_tokens}")
+
+        self.noise_path.rescale_resolution(new_input_size)
+        self.restoration_path.rescale_resolution(new_input_size)
+
+        print(f"   ✓ pos_embed interpolated (bicubic)")
+        print(f"   ✓ RoPE rebuilt with resolution scaling")
+
     def forward(
         self,
         x: torch.Tensor,          # noisy IHC [B, 3, H, W]
@@ -246,4 +269,74 @@ def create_stardiff_model(config, device="cuda"):
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"\n✓ Model on {device}: {total / 1e6:.1f}M total, {trainable / 1e6:.1f}M trainable")
     print(f"  Architecture: JiT_I2I_{config.model_size}")
+    return model
+
+
+def create_stardiff_model_for_finetune(config, checkpoint_path, new_resolution=512, device="cuda"):
+    """
+    Create StarDiff model for resolution finetuning.
+
+    Steps:
+      1. Create model at ORIGINAL checkpoint resolution (e.g. 256)
+      2. Load StarDiff checkpoint weights
+      3. Rescale pos_embed (bicubic) + RoPE to new_resolution
+      4. Move to device
+
+    This preserves all learned features from the 256 training while
+    adapting positional encodings for the higher resolution.
+
+    Args:
+        config: StarDiffPixelGenConfig (model arch fields used, image_size ignored)
+        checkpoint_path: Path to trained StarDiff .pt checkpoint
+        new_resolution: Target resolution (e.g. 512)
+        device: Target device
+
+    Returns:
+        Model ready for finetuning at new_resolution
+    """
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    # Load checkpoint to determine original resolution
+    print(f"📦 Loading checkpoint: {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+
+    ckpt_config = ckpt.get("config", {})
+    original_resolution = int(ckpt_config.get("image_size", "256"))
+    print(f"   Original resolution: {original_resolution}x{original_resolution}")
+
+    # Create model at ORIGINAL resolution to match checkpoint weight shapes
+    model = StarDiffPixelGenModel(
+        input_size=original_resolution,
+        patch_size=config.patch_size,
+        in_channels=config.in_channels,
+        cond_channels=config.cond_channels,
+        hidden_size=config.hidden_size,
+        depth=config.depth,
+        num_heads=config.num_heads,
+        mlp_ratio=config.mlp_ratio,
+        attn_drop=config.attn_drop,
+        proj_drop=config.proj_drop,
+        bottleneck_dim=config.bottleneck_dim,
+        use_bottleneck=config.use_bottleneck,
+        weight_path=None,   # Don't load PixelGen pretrained — we load StarDiff ckpt
+        load_ema=False,
+        gradient_checkpointing=True,
+    )
+
+    # Load StarDiff checkpoint
+    model.load_state_dict(ckpt["model_state_dict"], strict=True)
+    n_tensors = sum(1 for _ in ckpt["model_state_dict"])
+    print(f"   ✓ Loaded {n_tensors} weight tensors")
+
+    # Rescale to new resolution (interpolate pos_embed + rebuild RoPE)
+    if new_resolution != original_resolution:
+        model.rescale_resolution(new_resolution)
+
+    model = model.to(device)
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"\n✓ Finetune model on {device}: {total / 1e6:.1f}M total, {trainable / 1e6:.1f}M trainable")
+    print(f"  Resolution: {new_resolution}x{new_resolution}")
     return model

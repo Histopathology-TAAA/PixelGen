@@ -76,6 +76,7 @@ def generate_validation_samples(model, scheduler, val_dataloader, epoch, global_
 def train_stardiff(
     model, scheduler, train_dataloader, val_dataloader,
     optimizer, lr_scheduler, accelerator, config, perceptual_loss_fn=None,
+    dab_loss_fn=None,
     ema_tracker=None,
     start_epoch=0,
 ):
@@ -101,12 +102,14 @@ def train_stardiff(
 
     global_step = start_epoch * len(train_dataloader)
     best_loss = float("inf")
+    dab_weight = getattr(config, 'dab_weight', 0.0)
 
     for epoch in range(start_epoch, config.num_epochs):
         model.train()
         epoch_noise_loss = 0.0
         epoch_rest_loss = 0.0
         epoch_percept_loss = 0.0
+        epoch_dab_loss = 0.0
         progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{config.num_epochs}")
 
         for step, batch in enumerate(progress_bar):
@@ -151,11 +154,27 @@ def train_stardiff(
                         x_1_hat, ihc, t, scheduler.num_timesteps
                     )
 
+                # DAB stain-aware loss on restoration path x̂₁
+                # Only active when t >= 0.7 (clean predictions) to avoid noisy stain deconvolution
+                dab_loss_val = torch.tensor(0.0, device=accelerator.device)
+                dab_dict = {}
+                if dab_loss_fn is not None and dab_weight > 0:
+                    dab_gate = (t >= 0.7).float()  # 1 for clean steps (t≥0.7), 0 for noisy
+                    if dab_gate.sum() > 0:
+                        # DAB loss expects [0,1] range images
+                        x_1_01 = ((x1_rest_pred.clamp(-1, 1) + 1) / 2)
+                        ihc_01 = ((ihc + 1) / 2).clamp(0, 1)
+                        # Use float32 for stain deconvolution (log10 needs precision)
+                        dab_dict = dab_loss_fn(x_1_01.float(), ihc_01.float())
+                        # Gate: only count loss from samples with t >= 0.7
+                        dab_loss_val = dab_dict['total'] * (dab_gate.sum() / t.shape[0])
+
                 # Combined loss
                 loss = (
                     config.noise_loss_weight * loss_noise
                     + config.restoration_loss_weight * loss_rest
                     + percept_loss_val
+                    + dab_weight * dab_loss_val
                 )
 
                 accelerator.backward(loss)
@@ -171,6 +190,7 @@ def train_stardiff(
             epoch_noise_loss += loss_noise.item()
             epoch_rest_loss += loss_rest.item()
             epoch_percept_loss += percept_loss_val.item()
+            epoch_dab_loss += dab_loss_val.item()
             global_step += 1
 
             # Logging
@@ -180,6 +200,7 @@ def train_stardiff(
                     "train/noise_loss": loss_noise.item(),
                     "train/restoration_loss": loss_rest.item(),
                     "train/percept_loss": percept_loss_val.item(),
+                    "train/dab_loss": dab_loss_val.item(),
                     "train/lr": lr_scheduler.get_last_lr()[0],
                     "train/epoch": epoch + 1,
                     "train/global_step": global_step,
@@ -187,6 +208,10 @@ def train_stardiff(
                 if percept_dict:
                     for k, v in percept_dict.items():
                         log_dict[f"train/{k}_loss"] = v.item() if hasattr(v, "item") else float(v)
+                if dab_dict:
+                    for k, v in dab_dict.items():
+                        if k != 'total':
+                            log_dict[f"train/dab_{k}_loss"] = v.item() if hasattr(v, "item") else float(v)
                 wandb.log(log_dict, step=global_step)
 
             progress_bar.set_postfix(
@@ -194,6 +219,7 @@ def train_stardiff(
                 noise=f"{loss_noise.item():.4f}",
                 rest=f"{loss_rest.item():.4f}",
                 perc=f"{percept_loss_val.item():.4f}",
+                dab=f"{dab_loss_val.item():.4f}",
             )
 
         # Epoch summary
@@ -201,17 +227,19 @@ def train_stardiff(
         avg_noise = epoch_noise_loss / n
         avg_rest = epoch_rest_loss / n
         avg_perc = epoch_percept_loss / n
-        avg_total = avg_noise + avg_rest + avg_perc
+        avg_dab = epoch_dab_loss / n
+        avg_total = avg_noise + avg_rest + avg_perc + avg_dab
 
         if accelerator.is_main_process:
             wandb.log({
                 "epoch/noise_loss": avg_noise,
                 "epoch/restoration_loss": avg_rest,
                 "epoch/percept_loss": avg_perc,
+                "epoch/dab_loss": avg_dab,
                 "epoch/total_loss": avg_total,
                 "epoch/epoch": epoch + 1,
             }, step=global_step)
-        print(f"Epoch {epoch+1}: Noise={avg_noise:.4f} | Rest={avg_rest:.4f} | Percept={avg_perc:.4f}")
+        print(f"Epoch {epoch+1}: Noise={avg_noise:.4f} | Rest={avg_rest:.4f} | Percept={avg_perc:.4f} | DAB={avg_dab:.4f}")
 
         # Validation (use EMA weights if available)
         if (epoch + 1) % config.val_every == 0:
@@ -228,6 +256,7 @@ def train_stardiff(
                 "noise_loss": avg_noise,
                 "restoration_loss": avg_rest,
                 "percept_loss": avg_perc,
+                "dab_loss": avg_dab,
                 "model_state_dict": accelerator.unwrap_model(model).state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": lr_scheduler.state_dict(),

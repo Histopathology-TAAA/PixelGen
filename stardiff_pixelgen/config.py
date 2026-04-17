@@ -105,6 +105,17 @@ class StarDiffPixelGenConfig:
     noise_gate_threshold: float = 0.3   # from YAML: percept_t_threshold: 0.3
     use_dino: bool = False #True
 
+    # ── DAB Stain-Aware Loss ──
+    # From src/diffusion/flow_matching/dap_loss.py (CombinedDABLoss)
+    # Patch-level + histogram matching on deconvolved DAB channel
+    dab_weight: float = 0.0
+    dab_patch_sizes: tuple = (16, 32, 64)
+    dab_use_focal: bool = True
+    dab_focal_alpha: float = 1.8
+    dab_hist_weight: float = 1.0
+    dab_fod_threshold: float = 0.15
+    dab_weight_alpha: float = 5.0
+
     # ── Training (from YAML) ──
     batch_size: int = 8              
     learning_rate: float = 1e-4         # from YAML: lr: 0.0001
@@ -150,6 +161,9 @@ class StarDiffPixelGenConfig:
     # ── Stains ──
     stains: Tuple[str, ...] = ("KI67",)
 
+    # ── Finetuning (e.g. 512 from 256 checkpoint) ──
+    finetune_checkpoint: Optional[str] = None  # Path to trained StarDiff .pt checkpoint
+
     def __post_init__(self):
         """Apply model size preset after initialization."""
         self.set_model_size(self.model_size)
@@ -175,3 +189,45 @@ class StarDiffPixelGenConfig:
         self.set_model_size("XL")
         if gpu_type == "T4":
             self.use_dino = False  # Still disable DINOv2 on very low VRAM to try and survive
+
+    def configure_for_finetune(self, checkpoint_path: str, target_resolution: int = 512):
+        """
+        Configure for higher-resolution finetuning from a trained checkpoint.
+
+        Adjusts image_size, batch_size, LR, and W&B name for finetune mode.
+        All fields can still be overridden after calling this method.
+
+        Args:
+            checkpoint_path: Path to trained StarDiff .pt checkpoint
+            target_resolution: Target resolution (default 512)
+        """
+        self.finetune_checkpoint = checkpoint_path
+        self.image_size = target_resolution
+        self.source_image_size = target_resolution
+
+        # Scale batch/accumulation based on token count increase
+        # 256→512: 4x tokens, 512→1024: 4x tokens, 256→1024: 16x tokens
+        self.batch_size = 8
+        self.gradient_accumulation_steps = 1
+
+        # Lower LR for finetuning — even lower for 1024 (longer to converge stably)
+        if target_resolution >= 1024:
+            self.learning_rate = 1e-5
+            self.num_epochs = 4
+        else:
+            self.learning_rate = 2e-5
+            self.num_epochs = 20
+
+        # Enable perceptual losses for finetuning
+        self.lpips_weight = 0.1
+        self.dino_weight = 0.01
+        self.use_dino = True
+        self.noise_gate_threshold = 0.7  # Only apply LPIPS/DINO when t >= 0.7 (clean predictions)
+        # Enable DAB stain-aware loss for IHC fidelity
+        self.dab_weight = 0.5
+        self.wandb_name = f"stardiff-pixelgen-{self.model_size}-finetune-{target_resolution}"
+        print(f"\n\u2713 Configured for {target_resolution} finetuning")
+        print(f"  Checkpoint: {checkpoint_path}")
+        print(f"  Batch: {self.batch_size} \u00d7 {self.gradient_accumulation_steps} "
+              f"= {self.batch_size * self.gradient_accumulation_steps} effective")
+        print(f"  LR: {self.learning_rate}")
