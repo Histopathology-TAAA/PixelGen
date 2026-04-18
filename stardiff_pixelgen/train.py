@@ -57,16 +57,6 @@ def generate_validation_samples(model, scheduler, val_dataloader, epoch, global_
 
     he_vis, ihc_vis, gen_vis = denorm(he), denorm(ihc_real), denorm(generated.cpu())
     imgs = []
-
-def sample_timesteps(batch_size: int, device, loc: float = 0.0, scale: float = 1.0):
-    """
-    Logit-normal timestep sampling for flow matching.
-    Focuses training budget around harder mid-timesteps.
-    """
-    u = torch.randn(batch_size, device=device, dtype=torch.float32) * scale + loc
-    t = torch.sigmoid(u)
-    return t.clamp(1e-4, 1.0 - 1e-4)
-
     for i in range(actual):
         h_img = TF.to_pil_image(he_vis[i])
         r_img = TF.to_pil_image(ihc_vis[i])
@@ -81,6 +71,16 @@ def sample_timesteps(batch_size: int, device, loc: float = 0.0, scale: float = 1
     wandb.log({"validation/comparison_grid": imgs, "epoch": epoch}, step=global_step)
     print(f"  ✓ Logged {actual} validation samples for epoch {epoch}")
     model.train()
+
+
+def sample_timesteps(batch_size: int, device, loc: float = 0.0, scale: float = 1.0):
+    """
+    Logit-normal timestep sampling for flow matching.
+    Focuses training budget around harder mid-timesteps.
+    """
+    u = torch.randn(batch_size, device=device, dtype=torch.float32) * scale + loc
+    t = torch.sigmoid(u)
+    return t.clamp(1e-4, 1.0 - 1e-4)
 
 
 def train_stardiff(
@@ -128,14 +128,18 @@ def train_stardiff(
                 ihc = batch["ihc"]
                 residual = batch["residual"]
 
-                noise = torch.randn_like(ihc)
                 bs = ihc.shape[0]
-                
-                # Flow Matching: Sample random continuous timesteps t ~ U[0, 1]
-                t = torch.rand((bs,), device=accelerator.device, dtype=torch.float32)
+
+                # Flow Matching: Logit-normal timestep sampling (SD3/FLUX-style)
+                t = sample_timesteps(
+                    bs,
+                    device=accelerator.device,
+                    loc=getattr(config, "timestep_logit_loc", 0.0),
+                    scale=getattr(config, "timestep_logit_scale", 1.0),
+                )
 
                 # Star-Diff Flow Matching forward
-                x_t, v_target = scheduler.q_sample(ihc, t, noise, residual)
+                x_t, v_target = scheduler.q_sample(ihc, t, noise=None, restoration_residual=residual)
 
                 # Independent path predictions
                 x1_noise_pred, x1_rest_pred = model(x_t, t, he)
@@ -167,17 +171,11 @@ def train_stardiff(
                 # DAB stain-aware loss on restoration path x̂₁
                 dab_loss_val = torch.tensor(0.0, device=accelerator.device)
                 dab_dict = {}
-
-                # Flow Matching: Logit-normal timestep sampling (SD3/FLUX-style)
-                t = sample_timesteps(
-                    bs,
-                    device=accelerator.device,
-                    loc=getattr(config, "timestep_logit_loc", 0.0),
-                    scale=getattr(config, "timestep_logit_scale", 1.0),
-                )
+                if dab_loss_fn is not None and dab_weight > 0:
+                    dab_gate = (t >= 0.7).float()  # 1 for clean steps (t≥0.7), 0 for noisy
                     if dab_gate.sum() > 0:
                         # DAB loss expects [0,1] range images
-                x_t, v_target = scheduler.q_sample(ihc, t, noise=None, restoration_residual=residual)
+                        x_1_01 = ((x1_rest_pred.clamp(-1, 1) + 1) / 2)
                         ihc_01 = ((ihc + 1) / 2).clamp(0, 1)
                         # Use float32 for stain deconvolution (log10 needs precision)
                         dab_dict = dab_loss_fn(x_1_01.float(), ihc_01.float())
