@@ -99,6 +99,12 @@ def main(
     scheduler = StarDiffScheduler(
         num_timesteps=config.num_timesteps,
         restoration_weight=config.restoration_weight,
+        schedule_type=config.restoration_schedule_type,
+        integration_method=config.integration_method,
+        he_init_alpha=config.he_init_alpha,
+        late_t_threshold=config.late_t_threshold,
+        use_ot_coupling=config.use_ot_coupling,
+        ot_feature_size=config.ot_feature_size,
     )
     print(f"✓ StarDiff Scheduler: T={config.num_timesteps}, λ={config.restoration_weight}")
 
@@ -300,6 +306,12 @@ def finetune_512(
     scheduler = StarDiffScheduler(
         num_timesteps=config.num_timesteps,
         restoration_weight=config.restoration_weight,
+        schedule_type=config.restoration_schedule_type,
+        integration_method=config.integration_method,
+        he_init_alpha=config.he_init_alpha,
+        late_t_threshold=config.late_t_threshold,
+        use_ot_coupling=config.use_ot_coupling,
+        ot_feature_size=config.ot_feature_size,
     )
 
     # Loss
@@ -451,6 +463,12 @@ def finetune_1024(
     scheduler = StarDiffScheduler(
         num_timesteps=config.num_timesteps,
         restoration_weight=config.restoration_weight,
+        schedule_type=config.restoration_schedule_type,
+        integration_method=config.integration_method,
+        he_init_alpha=config.he_init_alpha,
+        late_t_threshold=config.late_t_threshold,
+        use_ot_coupling=config.use_ot_coupling,
+        ot_feature_size=config.ot_feature_size,
     )
 
     # Perceptual Loss

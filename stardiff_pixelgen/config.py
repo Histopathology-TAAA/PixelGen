@@ -96,6 +96,14 @@ class StarDiffPixelGenConfig:
     # ── Flow Matching (Rectified Flow) ──
     num_timesteps: int = 50       # Flow matching needs ~50 steps (DDPM needed 1000)
     restoration_weight: float = 0.5   # λ for restoration schedule β̄_t
+    restoration_schedule_type: str = "cosine"  # cosine | linear | constant
+    integration_method: str = "heun"  # heun | euler
+    he_init_alpha: float = 0.3
+    late_t_threshold: float = 0.95
+    use_ot_coupling: bool = True
+    ot_feature_size: int = 32
+    timestep_logit_loc: float = 0.0
+    timestep_logit_scale: float = 1.0
 
     # ── PixelGen Perceptual Losses ──
     # The YAML "FMonly" config sets these to 0.0 (pure flow matching)
