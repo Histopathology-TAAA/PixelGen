@@ -11,6 +11,7 @@ v_eff = v_noise + gamma_t * v_restoration
 """
 import torch
 from typing import Tuple
+import torch.nn.functional as F
 from tqdm import tqdm
 
 
@@ -24,6 +25,7 @@ class StarDiffScheduler:
         self,
         num_timesteps: int = 50,  # Flow Matching needs far fewer steps!
         restoration_weight: float = 0.5,
+        he_init_alpha:float = 0.3,
         **kwargs # Ignore DDPM kwargs
     ):
         self.num_timesteps = num_timesteps
@@ -34,6 +36,7 @@ class StarDiffScheduler:
         
         # Restoration schedule: gamma_t grows linearly from 0 to restoration_weight
         self.restoration_schedule = torch.linspace(0.0, restoration_weight, num_timesteps + 1)
+        self.he_init_alpha = he_init_alpha
 
     def to(self, device):
         """Move scheduler tensors to device."""
@@ -67,12 +70,19 @@ class StarDiffScheduler:
 
     @torch.no_grad()
     def sample(self, model, condition, shape, device="cuda",
-               use_restoration=True, use_noise=True, progress=True):
+               use_restoration=True, use_noise=True, progress=True, he_init_alpha=None):
         """
         Euler Sampling from t=0 (noise) to t=1 (clean image).
         """
         model.eval()
-        x = torch.randn(shape, device=device)
+        if he_init_alpha is None:
+            he_init_alpha = self.he_init_alpha
+        noise = torch.randn(shape, device=device)
+        condition_resized = condition
+        if condition.shape[-2:] != (shape[-2], shape[-1]):
+            condition_resized = F.interpolate(condition, size=(shape[-2], shape[-1]), mode="bilinear", align_corners=False)
+            
+        x = (1.0 - he_init_alpha) * noise + he_init_alpha * condition_resized
 
         steps = self.timesteps.to(device)
         

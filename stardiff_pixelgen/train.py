@@ -79,6 +79,7 @@ def train_stardiff(
     dab_loss_fn=None,
     ema_tracker=None,
     start_epoch=0,
+    he_init_alpha=0.3,
 ):
     """
     Star-Diff training with independent noise + restoration paths.
@@ -118,14 +119,19 @@ def train_stardiff(
                 ihc = batch["ihc"]
                 residual = batch["residual"]
 
-                noise = torch.randn_like(ihc)
+                raw_noise = torch.randn_like(ihc)
                 bs = ihc.shape[0]
-                
-                # Flow Matching: Sample random continuous timesteps t ~ U[0, 1]
-                t = torch.rand((bs,), device=accelerator.device, dtype=torch.float32)
 
-                # Star-Diff Flow Matching forward
-                x_t, v_target = scheduler.q_sample(ihc, t, noise, residual)
+                # H&E warm-start: match the inference starting distribution
+                he_init_alpha = he_init_alpha
+                x_0 = (1.0 - he_init_alpha) * raw_noise + he_init_alpha * he
+
+                # Flow Matching: logit-normal timestep sampling (focuses on hard mid-timesteps)
+                u = torch.randn((bs,), device=accelerator.device) * 1.0  # scale=1.0
+                t = torch.sigmoid(u)
+
+                # Star-Diff Flow Matching forward — pass x_0 so v_target = x_1 - x_0
+                x_t, v_target = scheduler.q_sample(ihc, t, x_0, residual)
 
                 # Independent path predictions
                 x1_noise_pred, x1_rest_pred = model(x_t, t, he)
