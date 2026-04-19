@@ -97,10 +97,10 @@ class StarDiffPixelGenConfig:
     num_timesteps: int = 50       # Flow matching needs ~50 steps (DDPM needed 1000)
     restoration_weight: float = 0.5   # λ for restoration schedule β̄_t
     restoration_schedule_type: str = "cosine"  # cosine | linear | constant
-    integration_method: str = "heun"  # heun | euler
-    he_init_alpha: float = 0.3
-    late_t_threshold: float = 0.95
-    use_ot_coupling: bool = True
+    integration_method: str = "euler"  # heun | euler
+    he_init_alpha: float = 1.0
+    late_t_threshold: float = 1.1
+    use_ot_coupling: bool = False
     ot_feature_size: int = 32
     timestep_logit_loc: float = 0.0
     timestep_logit_scale: float = 1.0
@@ -125,7 +125,7 @@ class StarDiffPixelGenConfig:
     dab_weight_alpha: float = 5.0
 
     # ── Training (from YAML) ──
-    batch_size: int = 8              
+    batch_size: int = 128              
     learning_rate: float = 1e-4         # from YAML: lr: 0.0001
     num_epochs: int = 50
     warmup_steps: int = 500
@@ -142,16 +142,16 @@ class StarDiffPixelGenConfig:
     ema_every_n_steps: int = 50           # was 1; increased to 50 to avoid PCIe bottleneck
 
     # ── DataLoader (from YAML) ──
-    num_workers: int = 4                  # Reduced to fix Pin Memory crash
+    num_workers: int = 8                  # Reduced to fix Pin Memory crash
     prefetch_factor: int = 2              # Reduced to fix Pin Memory crash
-    preload_to_ram: bool = False          # set to True if you have 32GB+ RAM to eliminate all disk IO bottlenecks
+    preload_to_ram: bool = True          # set to True if you have 32GB+ RAM to eliminate all disk IO bottlenecks
 
     # ── Mixed Precision ──
     mixed_precision: str = "bf16"         # from YAML: precision: bf16-mixed
 
     # ── Paths ──
-    dataset_root: str = "/home/histo/histo/data"
-    output_dir: str = "/home/histo/histo/data"
+    dataset_root: str = "/teamspace/studios/this_studio/data"
+    output_dir: str = "/teamspace/studios/this_studio/output"
     # Pretrained PixelGen checkpoint for weight initialization
     # Must match model_size architecture (XL weights only load into XL models)
     pretrained_weight_path: Optional[str] = "./PixelGen_XL_80ep.ckpt"
