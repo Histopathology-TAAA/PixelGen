@@ -65,7 +65,7 @@ class DABPixelGenConfig:
     fm_weight:           float = 1.0   # flow matching velocity loss
     dab_weight:          float = 1.0   # direct DAB density MSE
     recomp_weight:       float = 1.0   # recomposition MSE (end-to-end)
-    lpips_weight:        float = 0.0   # LPIPS on recomposed RGB (0=disabled)
+    lpips_weight:        float = 0.1   # LPIPS on recomposed RGB (0=disabled)
     noise_gate_threshold: float = 0.7  # min t for DAB/recomp/perceptual losses
 
     # ── Training ──────────────────────────────────────────────────────────────
