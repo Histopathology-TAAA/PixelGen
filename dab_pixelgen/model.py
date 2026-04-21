@@ -49,6 +49,103 @@ class GradCheckpointJiTBlock(nn.Module):
         )
 
 
+class CombinationNet(nn.Module):
+    """
+    Lightweight 2-level encoder-decoder that maps (DAB prediction + H&E) → IHC RGB.
+
+    Replaces analytical Beer-Lambert recomposition with a learned spatial mapping.
+    This eliminates the dependency on calibrated H-normalization parameters in early
+    training and provides direct gradient flow from the IHC loss to spatial features.
+
+    Architecture: ~1.2M params.
+    Input:  [B, 4, H, W]  = DAB_pred (1ch, raw density) + HE_condition (3ch, in [-1, 1])
+    Output: [B, 3, H, W]  IHC RGB in [-1, 1]
+
+    The output layer is zero-initialized so the network starts as a null correction
+    (outputs near 0 = gray) and learns from the IHC reconstruction loss.
+    """
+
+    def __init__(self, base_channels: int = 32):
+        super().__init__()
+        C = base_channels
+
+        self.enc1 = nn.Sequential(
+            nn.Conv2d(4, C, 3, padding=1),
+            nn.GroupNorm(8, C),
+            nn.SiLU(),
+            nn.Conv2d(C, C, 3, padding=1),
+            nn.GroupNorm(8, C),
+            nn.SiLU(),
+        )
+        self.down1 = nn.Sequential(
+            nn.Conv2d(C, C * 2, 3, stride=2, padding=1),
+            nn.GroupNorm(8, C * 2),
+            nn.SiLU(),
+        )
+        self.enc2 = nn.Sequential(
+            nn.Conv2d(C * 2, C * 2, 3, padding=1),
+            nn.GroupNorm(8, C * 2),
+            nn.SiLU(),
+            nn.Conv2d(C * 2, C * 2, 3, padding=1),
+            nn.GroupNorm(8, C * 2),
+            nn.SiLU(),
+        )
+        self.down2 = nn.Sequential(
+            nn.Conv2d(C * 2, C * 4, 3, stride=2, padding=1),
+            nn.GroupNorm(8, C * 4),
+            nn.SiLU(),
+        )
+        self.bottleneck = nn.Sequential(
+            nn.Conv2d(C * 4, C * 4, 3, padding=1),
+            nn.GroupNorm(8, C * 4),
+            nn.SiLU(),
+            nn.Conv2d(C * 4, C * 4, 3, padding=1),
+            nn.GroupNorm(8, C * 4),
+            nn.SiLU(),
+        )
+        self.up1 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
+        self.dec1 = nn.Sequential(
+            nn.Conv2d(C * 4 + C * 2, C * 2, 3, padding=1),
+            nn.GroupNorm(8, C * 2),
+            nn.SiLU(),
+            nn.Conv2d(C * 2, C * 2, 3, padding=1),
+            nn.GroupNorm(8, C * 2),
+            nn.SiLU(),
+        )
+        self.up2 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
+        self.dec2 = nn.Sequential(
+            nn.Conv2d(C * 2 + C, C, 3, padding=1),
+            nn.GroupNorm(8, C),
+            nn.SiLU(),
+            nn.Conv2d(C, C, 3, padding=1),
+            nn.GroupNorm(8, C),
+            nn.SiLU(),
+        )
+        self.out = nn.Conv2d(C, 3, 1)
+        nn.init.zeros_(self.out.weight)
+        nn.init.zeros_(self.out.bias)
+
+    def forward(self, dab_pred: torch.Tensor, he_cond: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            dab_pred: [B, 1, H, W]  predicted DAB density (raw OD scale)
+            he_cond:  [B, 3, H, W]  H&E condition in [-1, 1]
+        Returns:
+            [B, 3, H, W] IHC RGB in [-1, 1]
+        """
+        x  = torch.cat([dab_pred, he_cond], dim=1)  # [B, 4, H, W]
+        s1 = self.enc1(x)                            # [B, C, H, W]
+        x  = self.down1(s1)                          # [B, 2C, H/2, W/2]
+        s2 = self.enc2(x)                            # [B, 2C, H/2, W/2]
+        x  = self.down2(s2)                          # [B, 4C, H/4, W/4]
+        x  = self.bottleneck(x)                      # [B, 4C, H/4, W/4]
+        x  = self.up1(x)
+        x  = self.dec1(torch.cat([x, s2], dim=1))   # [B, 2C, H/2, W/2]
+        x  = self.up2(x)
+        x  = self.dec2(torch.cat([x, s1], dim=1))   # [B, C, H, W]
+        return torch.tanh(self.out(x))               # [B, 3, H, W] in [-1, 1]
+
+
 class HNormHead(nn.Module):
     """
     Per-image H-channel normalization parameter predictor.
@@ -113,6 +210,8 @@ class DABPixelGenModel(nn.Module):
         weight_path: Optional[str] = None,
         load_ema: bool = True,
         gradient_checkpointing: bool = True,
+        use_combination_net: bool = True,
+        combination_channels: int = 32,
     ):
         super().__init__()
 
@@ -143,13 +242,21 @@ class DABPixelGenModel(nn.Module):
         self.h_norm_head = HNormHead(hidden_size)
         self._hidden_size = hidden_size
 
+        # Learned combination head: (DAB, H&E) -> IHC RGB
+        if use_combination_net:
+            self.combination_net = CombinationNet(base_channels=combination_channels)
+        else:
+            self.combination_net = None
+
         if gradient_checkpointing:
             self._enable_gradient_checkpointing()
 
         total = sum(p.numel() for p in self.parameters())
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        print(f"DABPixelGen: 1 x JiT_I2I backbone (1ch DAB + H-norm head)")
+        combo_params = sum(p.numel() for p in self.combination_net.parameters()) if self.combination_net else 0
+        print(f"DABPixelGen: 1 x JiT_I2I backbone (1ch DAB + H-norm head + CombinationNet)")
         print(f"  Hidden: {hidden_size}, Depth: {depth}, Heads: {num_heads}")
+        print(f"  CombinationNet: {'enabled' if use_combination_net else 'disabled'} ({combo_params/1e6:.2f}M params)")
         print(f"  Total params: {total / 1e6:.1f}M  Trainable: {trainable / 1e6:.1f}M")
         if weight_path:
             print(f"  Pretrained from: {weight_path}")
@@ -258,22 +365,26 @@ class DABPixelGenModel(nn.Module):
         x_noisy_dab:  torch.Tensor,   # [B, 1, H, W]
         t:             torch.Tensor,   # [B]
         he_condition:  torch.Tensor,   # [B, 3, H, W]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
         Returns:
-            dab_pred:     [B, 1, H, W]   predicted clean DAB density
-            h_norm_params:[B, 2]          (a_raw, b_raw)
+            dab_pred:     [B, 1, H, W]            predicted clean DAB density
+            h_norm_params:[B, 2]                   (a_raw, b_raw) for analytical fallback
+            ihc_pred:     [B, 3, H, W] or None     IHC RGB in [-1, 1] from CombinationNet
         """
-        # JiT_I2I expects (x, t, y) where x is noisy target, y is condition.
-        # It internally does x_concat = cat([x, y], dim=1).
-        # return_last=True gives us the final token sequence for the h_norm_head.
         dab_pred, _, last_seq = self.backbone(
             x_noisy_dab, t, he_condition,
-            return_layer=0,        # capture layer-0 features (unused, needed for API)
+            return_layer=0,
             return_last=True,
         )
         h_norm_params = self.h_norm_head(last_seq)  # [B, 2]
-        return dab_pred, h_norm_params
+
+        if self.combination_net is not None:
+            ihc_pred = self.combination_net(dab_pred, he_condition)  # [B, 3, H, W]
+        else:
+            ihc_pred = None
+
+        return dab_pred, h_norm_params, ihc_pred
 
 
 # ── EMA ──────────────────────────────────────────────────────────────────────
@@ -344,6 +455,8 @@ def create_dab_model(config, device: str = "cuda") -> DABPixelGenModel:
         weight_path=config.pretrained_weight_path,
         load_ema=True,
         gradient_checkpointing=True,
+        use_combination_net=getattr(config, "use_combination_net", True),
+        combination_channels=getattr(config, "combination_channels", 32),
     ).to(device)
     return model
 

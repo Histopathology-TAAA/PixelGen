@@ -57,6 +57,10 @@ class DABPixelGenConfig:
     bottleneck_dim: int = 128
     use_bottleneck: bool = False
 
+    # ── CombinationNet ────────────────────────────────────────────────────────
+    use_combination_net: bool = True   # learned (DAB+HE)->IHC conv head
+    combination_channels: int = 32     # base channel width (~1.2M params)
+
     # ── Flow Matching ─────────────────────────────────────────────────────────
     num_timesteps:   int   = 50
     he_init_alpha:   float = 0.3    # H&E warm-start coefficient for noise init

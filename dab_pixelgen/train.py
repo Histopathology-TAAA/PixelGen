@@ -211,15 +211,18 @@ def generate_validation_samples(
         h_he_c     = h_he_all[start:end].to(accelerator.device)
 
         shape = (he_c.shape[0], 1, config.image_size, config.image_size)
-        dab_pred_c, h_norm_c = scheduler.sample(
+        dab_pred_c, h_norm_c, ihc_pred_c = scheduler.sample(
             accelerator.unwrap_model(model),
             he_c, shape,
             device=accelerator.device,
             h_he_density=h_he_c,
             progress=False,
         )
-        h_ihc_c    = normalize_h_density(h_he_c, h_norm_c[:, 0], h_norm_c[:, 1])
-        recomp_c   = analytical_recompose(h_ihc_c, dab_pred_c, device=accelerator.device)
+        if ihc_pred_c is not None:
+            recomp_c = (ihc_pred_c.clamp(-1, 1) + 1) / 2
+        else:
+            h_ihc_c  = normalize_h_density(h_he_c, h_norm_c[:, 0], h_norm_c[:, 1])
+            recomp_c = analytical_recompose(h_ihc_c, dab_pred_c, device=accelerator.device)
         dab_pred_parts.append(dab_pred_c.cpu())
         recomp_parts.append(recomp_c.cpu())
 
@@ -352,7 +355,7 @@ def train_dab(
                 x_t, v_target = scheduler.q_sample(dab_gt, t, x_0)
 
                 # ── Model forward ─────────────────────────────────────────────
-                x1_pred, h_norm_params = model(x_t, t, he)
+                x1_pred, h_norm_params, ihc_pred = model(x_t, t, he)
 
                 # ── Combined loss ─────────────────────────────────────────────
                 total_loss, log_dict = loss_fn(
@@ -365,6 +368,7 @@ def train_dab(
                     dab_gt_fod=dab_gt_fod,
                     h_he_density=h_he_density,
                     ihc_rgb_gt=ihc_01,
+                    ihc_pred=ihc_pred,
                 )
 
                 accelerator.backward(total_loss)

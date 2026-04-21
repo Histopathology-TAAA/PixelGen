@@ -143,21 +143,26 @@ class RecompositionLoss(nn.Module):
 
     def forward(
         self,
-        dab_pred:     torch.Tensor,   # [B, 1, H, W] predicted clean DAB density
-        h_norm_params:torch.Tensor,   # [B, 2]        (a_raw, b_raw)
-        h_he_density: torch.Tensor,   # [B, 1, H, W]  H density from H&E deconv
-        ihc_rgb_gt:   torch.Tensor,   # [B, 3, H, W]  GT IHC in [0, 1]
-        t:            torch.Tensor,   # [B]
+        dab_pred:     torch.Tensor,            # [B, 1, H, W] predicted clean DAB density
+        h_norm_params:torch.Tensor,            # [B, 2]        (a_raw, b_raw)
+        h_he_density: torch.Tensor,            # [B, 1, H, W]  H density from H&E deconv
+        ihc_rgb_gt:   torch.Tensor,            # [B, 3, H, W]  GT IHC in [0, 1]
+        t:            torch.Tensor,            # [B]
+        ihc_pred:     Optional[torch.Tensor] = None,  # [B, 3, H, W] in [-1,1] from CombinationNet
     ) -> Tuple[torch.Tensor, Dict]:
         gate = (t >= self.threshold).float()
         if gate.sum() == 0:
             zero = torch.tensor(0.0, device=dab_pred.device)
             return zero, {"recomp_mse": zero, "recomp_lpips": zero}
 
-        a_raw = h_norm_params[:, 0]
-        b_raw = h_norm_params[:, 1]
-        h_ihc = normalize_h_density(h_he_density, a_raw, b_raw)  # [B, 1, H, W]
-        recomposed = analytical_recompose(h_ihc, dab_pred, device=dab_pred.device)
+        if ihc_pred is not None:
+            # CombinationNet output: [-1, 1] → [0, 1]
+            recomposed = (ihc_pred.clamp(-1, 1) + 1) / 2
+        else:
+            a_raw = h_norm_params[:, 0]
+            b_raw = h_norm_params[:, 1]
+            h_ihc = normalize_h_density(h_he_density, a_raw, b_raw)  # [B, 1, H, W]
+            recomposed = analytical_recompose(h_ihc, dab_pred, device=dab_pred.device)
 
         mse = F.mse_loss(recomposed, ihc_rgb_gt, reduction="none")  # [B, 3, H, W]
         mse = mse.mean(dim=(1, 2, 3))                                 # [B]
@@ -209,20 +214,22 @@ class DABPixelGenLoss(nn.Module):
 
     def forward(
         self,
-        x1_pred:       torch.Tensor,   # [B, 1, H, W] model output (clean DAB density)
-        h_norm_params: torch.Tensor,   # [B, 2]
-        x_t:           torch.Tensor,   # [B, 1, H, W]
-        v_target:      torch.Tensor,   # [B, 1, H, W]
-        t:             torch.Tensor,   # [B]
-        dab_gt:        torch.Tensor,   # [B, 1, H, W] raw DAB density (for recomposition)
-        dab_gt_fod:    torch.Tensor,   # [B, 1, H, W] FOD DAB (for expression loss)
-        h_he_density:  torch.Tensor,   # [B, 1, H, W]
-        ihc_rgb_gt:    torch.Tensor,   # [B, 3, H, W] in [0, 1]
+        x1_pred:       torch.Tensor,            # [B, 1, H, W] model output (clean DAB density)
+        h_norm_params: torch.Tensor,            # [B, 2]
+        x_t:           torch.Tensor,            # [B, 1, H, W]
+        v_target:      torch.Tensor,            # [B, 1, H, W]
+        t:             torch.Tensor,            # [B]
+        dab_gt:        torch.Tensor,            # [B, 1, H, W] raw DAB density (for recomposition)
+        dab_gt_fod:    torch.Tensor,            # [B, 1, H, W] FOD DAB (for expression loss)
+        h_he_density:  torch.Tensor,            # [B, 1, H, W]
+        ihc_rgb_gt:    torch.Tensor,            # [B, 3, H, W] in [0, 1]
+        ihc_pred:      Optional[torch.Tensor] = None,  # [B, 3, H, W] in [-1,1] from CombinationNet
     ) -> Tuple[torch.Tensor, Dict]:
         l_fm   = self.fm_loss(x1_pred, x_t, v_target, t)
         l_dab  = self.dab_loss_fn(x1_pred, dab_gt_fod, t)   # supervise on FOD space
         l_recomp, recomp_dict = self.recomp_loss_fn(
-            x1_pred, h_norm_params, h_he_density, ihc_rgb_gt, t
+            x1_pred, h_norm_params, h_he_density, ihc_rgb_gt, t,
+            ihc_pred=ihc_pred,
         )
 
         total = (

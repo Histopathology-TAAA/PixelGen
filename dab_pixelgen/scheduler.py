@@ -110,8 +110,9 @@ class DABFlowScheduler:
         Run Euler sampling from t=0 (noise) to t=1 (clean DAB).
 
         Returns:
-            dab_pred:     [B, 1, H, W]   final predicted DAB density
-            h_norm_params:[B, 2]          H-normalization params from last step
+            dab_pred:     [B, 1, H, W]              final predicted DAB density
+            h_norm_params:[B, 2]                     H-normalization params from last step
+            ihc_pred:     [B, 3, H, W] or None       IHC RGB in [-1, 1] from CombinationNet
         """
         model.eval()
         alpha = he_init_alpha if he_init_alpha is not None else self.he_init_alpha
@@ -129,6 +130,7 @@ class DABFlowScheduler:
             iterator = tqdm(iterator, desc="DAB Sampling (Flow Matching)")
 
         h_norm_params = None
+        ihc_pred      = None
         for i in iterator:
             t_cur  = steps[i]
             t_next = steps[i + 1]
@@ -136,8 +138,8 @@ class DABFlowScheduler:
 
             t_batch = torch.full((shape[0],), t_cur.item(), device=device)
 
-            # Model predicts clean x_1 and H-norm params
-            x1_pred, h_norm_params = model(x, t_batch, he_cond)
+            # Model predicts clean x_1, H-norm params, and optional IHC from CombinationNet
+            x1_pred, h_norm_params, ihc_pred = model(x, t_batch, he_cond)
 
             # Rectified flow velocity: v = (x_1 - x_t) / (1 - t)
             denom = (1.0 - t_batch.view(-1, 1, 1, 1)).clamp_min(1e-3)
@@ -146,4 +148,4 @@ class DABFlowScheduler:
             # Euler step
             x = x + velocity * dt
 
-        return x, h_norm_params
+        return x, h_norm_params, ihc_pred

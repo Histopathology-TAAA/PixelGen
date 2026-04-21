@@ -78,9 +78,9 @@ def run_inference(
     # Normalize H&E to [-1, 1] for model conditioning
     he_11 = he_image * 2 - 1  # [B, 3, H, W]
 
-    # 2. Sample DAB density
+    # 2. Sample DAB density (+ IHC from CombinationNet if available)
     shape = (B, 1, H, W)
-    dab_pred, h_norm_params = scheduler.sample(
+    dab_pred, h_norm_params, ihc_pred = scheduler.sample(
         model,
         he_condition=he_11,
         shape=shape,
@@ -89,30 +89,35 @@ def run_inference(
         progress=progress,
     )
 
-    # 3. Determine H normalization parameters
-    if use_analytical_h_norm:
-        h_ihc_list = []
-        for b in range(B):
-            a, offset = fit_h_normalization_analytical(
-                h_he_density[b], ihc_h_p5, ihc_h_p95
-            )
-            h_norm = (a * h_he_density[b] + offset).clamp(min=0)
-            h_ihc_list.append(h_norm)
-        h_ihc = torch.stack(h_ihc_list, dim=0)  # [B, 1, H, W]
+    # 3. Final IHC RGB: prefer CombinationNet output, fall back to analytical recomposition
+    if ihc_pred is not None and not use_analytical_h_norm:
+        ihc_rgb = (ihc_pred.clamp(-1, 1) + 1) / 2   # [-1, 1] → [0, 1]
+        h_ihc   = normalize_h_density(
+            h_he_density, h_norm_params[:, 0], h_norm_params[:, 1]
+        )
     else:
-        a_raw = h_norm_params[:, 0]
-        b_raw = h_norm_params[:, 1]
-        h_ihc = normalize_h_density(h_he_density, a_raw, b_raw)
-
-    # 4. Analytical Beer-Lambert recomposition
-    ihc_rgb = analytical_recompose(h_ihc, dab_pred, device=device)
+        if use_analytical_h_norm:
+            h_ihc_list = []
+            for b in range(B):
+                a, offset = fit_h_normalization_analytical(
+                    h_he_density[b], ihc_h_p5, ihc_h_p95
+                )
+                h_norm = (a * h_he_density[b] + offset).clamp(min=0)
+                h_ihc_list.append(h_norm)
+            h_ihc = torch.stack(h_ihc_list, dim=0)
+        else:
+            h_ihc = normalize_h_density(
+                h_he_density, h_norm_params[:, 0], h_norm_params[:, 1]
+            )
+        ihc_rgb = analytical_recompose(h_ihc, dab_pred, device=device)
 
     return {
-        "ihc_rgb":      ihc_rgb,          # [B, 3, H, W] in [0, 1]
-        "dab_pred":     dab_pred,          # [B, 1, H, W]
-        "h_ihc":        h_ihc,            # [B, 1, H, W]
-        "h_he_density": h_he_density,     # [B, 1, H, W]
-        "h_norm_params":h_norm_params,    # [B, 2]
+        "ihc_rgb":       ihc_rgb,          # [B, 3, H, W] in [0, 1]
+        "dab_pred":      dab_pred,         # [B, 1, H, W]
+        "h_ihc":         h_ihc,            # [B, 1, H, W]
+        "h_he_density":  h_he_density,     # [B, 1, H, W]
+        "h_norm_params": h_norm_params,    # [B, 2]
+        "ihc_pred_raw":  ihc_pred,         # [B, 3, H, W] in [-1, 1], or None
     }
 
 
@@ -141,7 +146,7 @@ def inference_comparison(
     dab_gt  = batch["dab_gt"][:num_samples].to(device)
 
     shape = (he.shape[0], 1, he.shape[2], he.shape[3])
-    dab_pred, h_norm = scheduler.sample(
+    dab_pred, h_norm, ihc_pred_comb = scheduler.sample(
         model, he, shape, device=device, h_he_density=h_he, progress=True
     )
 
