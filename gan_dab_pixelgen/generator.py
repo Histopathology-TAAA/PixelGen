@@ -226,8 +226,10 @@ class DABUNetGenerator(nn.Module):
             nn.SiLU(),
             nn.Conv2d(ch, 1, 1),
         )
+        # Small negative bias so initial output centres near 0 OD (background).
+        # Do NOT zero-init weight+bias: relu/softplus of all-zeros → dead gradient.
         nn.init.zeros_(self.dab_head[-1].weight)
-        nn.init.zeros_(self.dab_head[-1].bias)
+        nn.init.constant_(self.dab_head[-1].bias, -1.0)  # softplus(-1) ≈ 0.31 OD
 
         # ── CombinationNet ────────────────────────────────────────────────────
         self.combination_net = CombinationNet(base_channels=combination_channels)
@@ -296,7 +298,9 @@ class DABUNetGenerator(nn.Module):
                 up_idx += 1
 
         # ── Outputs ───────────────────────────────────────────────────────────
-        dab_pred = F.relu(self.dab_head(x))           # [B, 1, H, W]  density ≥ 0
+        # softplus ensures density > 0 everywhere AND has nonzero gradient at init,
+        # unlike relu which creates dead gradients when dab_head output ≤ 0.
+        dab_pred = F.softplus(self.dab_head(x))       # [B, 1, H, W]  density > 0
         ihc_pred = self.combination_net(dab_pred, he)  # [B, 3, H, W]  in [-1, 1]
 
         return dab_pred, ihc_pred, h_norm_params

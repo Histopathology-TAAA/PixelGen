@@ -392,16 +392,19 @@ def train_gan(
             # ── W&B step logging ──────────────────────────────────────────────
             if global_step % config.log_every == 0 and accelerator.is_main_process:
                 wandb.log({
-                    "train/d_loss":    d_loss.item(),
-                    "train/r1_loss":   r1_loss.item(),
-                    "train/g_total":   g_total.item(),
-                    "train/g_adv":     g_log["g/adv"].item(),
-                    "train/g_fm":      g_log["g/feat_match"].item(),
-                    "train/g_l1":      g_log["g/l1"].item(),
-                    "train/g_dab":     g_log["g/dab"].item(),
-                    "train/g_lpips":   g_log["g/lpips"].item(),
-                    "train/noise_std": noise_std,
-                    "train/epoch":     epoch + 1,
+                    "train/d_loss":      d_loss.item(),
+                    "train/r1_loss":     r1_loss.item(),
+                    "train/g_total":     g_total.item(),
+                    "train/g_adv":       g_log["g/adv"].item(),
+                    "train/g_fm":        g_log["g/feat_match"].item(),
+                    "train/g_l1":        g_log["g/l1"].item(),
+                    "train/g_dab":       g_log["g/dab"].item(),
+                    "train/g_dab_pixel": g_log["g/dab_pixel"].item(),
+                    "train/g_dab_hist":  g_log["g/dab_hist"].item(),
+                    "train/g_dab_patch": g_log["g/dab_patch"].item(),
+                    "train/g_lpips":     g_log["g/lpips"].item(),
+                    "train/noise_std":   noise_std,
+                    "train/epoch":       epoch + 1,
                 }, step=global_step)
 
             progress.set_postfix(
@@ -409,6 +412,8 @@ def train_gan(
                 G=f"{g_total.item():.3f}",
                 adv=f"{g_log['g/adv'].item():.3f}",
                 L1=f"{g_log['g/l1'].item():.3f}",
+                dab=f"{g_log['g/dab'].item():.3f}",
+                hist=f"{g_log['g/dab_hist'].item():.3f}",
             )
 
         n = len(train_dataloader)

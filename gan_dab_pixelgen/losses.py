@@ -135,35 +135,153 @@ class FeatureMatchingLoss(nn.Module):
 
 # ── DAB expression loss ───────────────────────────────────────────────────────
 
-class DABExpressionLoss(nn.Module):
+class FocalODLoss(nn.Module):
     """
-    FOD-space DAB density supervision (identical to dab_pixelgen.DABPredictionLoss).
+    PSPStain Focal Optical Density loss with histogram and patch-level supervision.
 
-    Supervises the generator's DAB head against PSPStain FOD targets, which
-    emphasise strongly positive nuclei and suppress weak background staining.
-    This keeps the DAB path physically meaningful even when the GAN objective
-    dominates the RGB branch.
+    Fixes the "always white DAB" failure mode that plagues pixel-only MSE:
+
+      Problem 1 — Wrong OD→intensity mapping:
+        The model predicts OD (optical density), where HIGH OD = MORE staining.
+        Via Beer-Lambert: intensity I = 10^(-OD).
+        Background (OD=0) → I=1 (white).  Heavy staining (OD=3) → I=0.001 (dark).
+        The naive `_raw_to_fod(raw)` treated OD as intensity directly, giving
+        FOD≈0 for strong staining and FOD≈high for empty prediction — sign error.
+
+      Problem 2 — Dead gradients through ReLU + hard threshold:
+        When the model initialises dab_head ≈ 0, FOD(0) lands in the threshold
+        dead-zone.  Gradients are exactly zero and the head never wakes up.
+        We use softplus instead of relu in the training FOD to preserve gradients
+        everywhere.  The hard threshold is only applied at inference / visualisation.
+
+      Problem 3 — Background dominates pixel loss:
+        At 256px patches, ~80% of pixels are background (FOD=0).  MSE collapses
+        to predicting zero everywhere with low average loss.
+        Histogram + patch-level losses operate on image-level statistics and
+        are insensitive to pixel-perfect background alignment.
+
+    Args:
+        n_bins:        number of bins for differentiable soft histogram (default 64)
+        hist_sigma:    soft-bin bandwidth in FOD units (default 0.05)
+        patch_sizes:   pooling kernel sizes for patch statistics (default (16, 32, 64))
+        pixel_weight:  L1 pixel loss weight
+        hist_weight:   histogram EMD/L1 loss weight
+        patch_weight:  patch mean-MSE weight
     """
 
-    def __init__(self):
+    # PSPStain FOD constants
+    _FOD_ALPHA:       float = 1.8
+    _FOD_CALIBRATION: float = 10.0 ** (-(math.e) ** (1.0 / 1.8))  # ≈ 0.0181
+    _FOD_MAX:         float = 5.0   # upper end of histogram axis
+
+    def __init__(
+        self,
+        n_bins:       int              = 64,
+        hist_sigma:   float            = 0.05,
+        patch_sizes:  tuple            = (16, 32, 64),
+        pixel_weight: float            = 1.0,
+        hist_weight:  float            = 2.0,
+        patch_weight: float            = 1.0,
+    ):
         super().__init__()
-        self.fod_alpha        = 1.8
-        self.fod_calibration  = 10.0 ** (-(math.e) ** (1.0 / self.fod_alpha))
-        self.fod_thresh       = 0.15
+        self.n_bins       = n_bins
+        self.hist_sigma   = hist_sigma
+        self.patch_sizes  = patch_sizes
+        self.pixel_weight = pixel_weight
+        self.hist_weight  = hist_weight
+        self.patch_weight = patch_weight
 
-    def _raw_to_fod(self, raw: torch.Tensor) -> torch.Tensor:
-        intensity = torch.clamp(raw, 0.0, 5.0)
-        fod = torch.log10(1.0 / (intensity + self.fod_calibration))
-        fod = F.relu(fod) ** self.fod_alpha
-        return torch.where(fod < self.fod_thresh, torch.zeros_like(fod), fod)
+        # Bin centres for soft histogram — range [0, FOD_MAX]
+        self.register_buffer(
+            "bin_centers",
+            torch.linspace(0.0, self._FOD_MAX, n_bins),
+        )
+
+    def _density_to_fod(self, density: torch.Tensor) -> torch.Tensor:
+        """
+        Convert raw DAB OD density → FOD for training.
+
+        Beer-Lambert: I = 10^(-OD)   (OD=0 → I=1 white; OD=3 → I=0.001 dark)
+        FOD = relu(log10(1/(I + cal)))^alpha
+
+        Uses softplus instead of relu so that gradients are nonzero even when
+        log10(1/(I+cal)) ≤ 0 (i.e. for very low-density / background pixels).
+        This prevents the DAB head from getting permanently stuck at zero.
+        """
+        d         = density.clamp(0.0, 5.0)
+        intensity = 10.0 ** (-d)                             # Beer-Lambert
+        log_fod   = torch.log10(1.0 / (intensity + self._FOD_CALIBRATION))
+        # Steep softplus approximates relu but has nonzero gradient below 0
+        # softplus(5x)/5 ≈ relu(x) for x > 0.3, smooth and nonzero elsewhere
+        fod = (F.softplus(log_fod * 5.0) / 5.0) ** self._FOD_ALPHA
+        return fod
+
+    def _soft_histogram(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Differentiable per-image soft histogram over all spatial positions.
+
+        Returns normalised probability distribution over `n_bins` FOD bins.
+        Gaussian kernel assignment:  h[b] ∝ Σ_i exp(-0.5*((x_i - c_b)/σ)²)
+        """
+        B       = x.shape[0]
+        x_flat  = x.reshape(B, -1, 1)                        # [B, N, 1]
+        centers = self.bin_centers.view(1, 1, -1)             # [1, 1, n_bins]
+        weights = torch.exp(-0.5 * ((x_flat - centers) / self.hist_sigma) ** 2)
+        hist    = weights.mean(dim=1)                         # [B, n_bins]
+        return hist / (hist.sum(dim=1, keepdim=True) + 1e-8)
+
+    def _histogram_loss(
+        self, pred_fod: torch.Tensor, gt_fod: torch.Tensor
+    ) -> torch.Tensor:
+        """L1 between per-image normalised FOD histograms."""
+        return F.l1_loss(self._soft_histogram(pred_fod), self._soft_histogram(gt_fod))
+
+    def _patch_loss(
+        self, pred_fod: torch.Tensor, gt_fod: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Multi-scale patch mean-MSE.
+
+        Average-pools both pred and GT FOD to coarser grids, then computes MSE.
+        Effective at matching the spatial distribution of staining even when
+        pixel-level alignment is poor.
+        """
+        loss = torch.tensor(0.0, device=pred_fod.device)
+        for ps in self.patch_sizes:
+            pred_p = F.avg_pool2d(pred_fod, kernel_size=ps, stride=ps)
+            gt_p   = F.avg_pool2d(gt_fod,   kernel_size=ps, stride=ps)
+            loss   = loss + F.mse_loss(pred_p, gt_p)
+        return loss / len(self.patch_sizes)
 
     def forward(
         self,
-        dab_pred:   torch.Tensor,   # [B, 1, H, W]  predicted raw DAB density
-        dab_gt_fod: torch.Tensor,   # [B, 1, H, W]  GT DAB in FOD space
-    ) -> torch.Tensor:
-        pred_fod = self._raw_to_fod(dab_pred)
-        return F.mse_loss(pred_fod, dab_gt_fod)
+        dab_pred:   torch.Tensor,   # [B, 1, H, W]  predicted raw OD density (≥ 0)
+        dab_gt_fod: torch.Tensor,   # [B, 1, H, W]  GT FOD from PSPStainDABExtractor
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        Returns:
+            total loss (scalar), log dict with per-component values
+        """
+        pred_fod = self._density_to_fod(dab_pred)   # [B, 1, H, W]
+
+        pixel_loss = F.l1_loss(pred_fod, dab_gt_fod)
+        hist_loss  = self._histogram_loss(pred_fod, dab_gt_fod)
+        patch_loss = self._patch_loss(pred_fod, dab_gt_fod)
+
+        total = (
+              self.pixel_weight * pixel_loss
+            + self.hist_weight  * hist_loss
+            + self.patch_weight * patch_loss
+        )
+        return total, {
+            "dab/pixel": pixel_loss.detach(),
+            "dab/hist":  hist_loss.detach(),
+            "dab/patch": patch_loss.detach(),
+        }
+
+
+# Keep old name as alias for backward compatibility with any existing imports
+DABExpressionLoss = FocalODLoss
 
 
 # ── Combined generator loss ───────────────────────────────────────────────────
@@ -198,7 +316,7 @@ class GANDABLoss(nn.Module):
 
         self.gan_loss    = GANLoss(mode=gan_mode)
         self.fm_loss     = FeatureMatchingLoss()
-        self.dab_loss_fn = DABExpressionLoss()
+        self.dab_loss_fn = FocalODLoss()
         self.lpips_fn: Optional[nn.Module] = None
 
         if lpips_weight > 0.0:
@@ -245,8 +363,8 @@ class GANDABLoss(nn.Module):
         # ── Pixel L1 on IHC RGB ───────────────────────────────────────────────
         l_l1 = F.l1_loss(ihc_pred_01, ihc_gt_01)
 
-        # ── DAB expression (FOD space) ────────────────────────────────────────
-        l_dab = self.dab_loss_fn(dab_pred, dab_gt_fod)
+        # ── DAB expression (FOD histogram + patch + pixel) ───────────────────
+        l_dab, dab_log = self.dab_loss_fn(dab_pred, dab_gt_fod)
 
         # ── LPIPS perceptual ──────────────────────────────────────────────────
         l_lpips = torch.tensor(0.0, device=device)
@@ -271,6 +389,9 @@ class GANDABLoss(nn.Module):
             "g/feat_match":  l_fm.detach(),
             "g/l1":          l_l1.detach(),
             "g/dab":         l_dab.detach(),
+            "g/dab_pixel":   dab_log["dab/pixel"],
+            "g/dab_hist":    dab_log["dab/hist"],
+            "g/dab_patch":   dab_log["dab/patch"],
             "g/lpips":       l_lpips.detach(),
             "g/total":       total.detach(),
         }
