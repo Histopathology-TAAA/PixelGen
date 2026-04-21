@@ -225,7 +225,7 @@ class FocalODLoss(nn.Module):
         """
         B       = x.shape[0]
         x_flat  = x.reshape(B, -1, 1)                        # [B, N, 1]
-        centers = self.bin_centers.view(1, 1, -1)             # [1, 1, n_bins]
+        centers = self.bin_centers.to(x.device).view(1, 1, -1)  # [1, 1, n_bins]
         weights = torch.exp(-0.5 * ((x_flat - centers) / self.hist_sigma) ** 2)
         hist    = weights.mean(dim=1)                         # [B, n_bins]
         return hist / (hist.sum(dim=1, keepdim=True) + 1e-8)
