@@ -90,8 +90,8 @@ class DABPixelGenConfig:
     mixed_precision: str = "bf16"
 
     # ── Paths ─────────────────────────────────────────────────────────────────
-    dataset_root:         str            = "/teamspace/studios/this_studio/data"
-    output_dir:           str            = "/teamspace/studios/this_studio/output"
+    dataset_root: str = "/home/ahmed_ayman/data"
+    output_dir: str = "/home/ahmed_ayman/ayman/outputs/pixelgen_dab"
     pretrained_weight_path: Optional[str] = "./PixelGen_XL_80ep.ckpt"
 
     # ── Logging ───────────────────────────────────────────────────────────────
