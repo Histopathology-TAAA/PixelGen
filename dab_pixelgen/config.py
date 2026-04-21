@@ -69,9 +69,9 @@ class DABPixelGenConfig:
     noise_gate_threshold: float = 0.7  # min t for DAB/recomp/perceptual losses
 
     # ── Training ──────────────────────────────────────────────────────────────
-    batch_size:                   int   = 32
+    batch_size:                   int   = 48
     learning_rate:                float = 1e-4
-    num_epochs:                   int   = 50
+    num_epochs:                   int   = 80
     warmup_steps:                 int   = 500
     gradient_accumulation_steps:  int   = 1
     max_grad_norm:                float = 1.0
@@ -98,7 +98,8 @@ class DABPixelGenConfig:
     log_every:        int = 20
     save_every:       int = 5
     val_every:        int = 1
-    num_val_samples:  int = 8
+    num_val_samples:  int = 8    # how many images to visualise in the W&B grid
+    num_val_batches:  int = 30   # max batches to run during validation (0 = full val set)
 
     # ── W&B ───────────────────────────────────────────────────────────────────
     wandb_project: str = "dab-pixelgen-he-to-ihc"
