@@ -19,6 +19,7 @@ Three complementary losses work together:
 """
 import sys
 import os
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -54,26 +55,57 @@ class FlowMatchingLoss(nn.Module):
 
 class DABPredictionLoss(nn.Module):
     """
-    Pixel-wise MSE between predicted DAB density and GT DAB density.
-    Noise-gated: only active for samples where t >= threshold.
+    DAB expression-level supervision using PSPStain FOD targets.
+
+    Uses `dab_gt_fod` (FOD-transformed ground truth) rather than raw density:
+      - FOD emphasises strongly positive nuclei/cells (the clinically relevant signal)
+      - FOD suppresses weak/background staining noise
+      - MSE on FOD space is perceptually aligned with what pathologists score
+
+    The model still predicts raw stain density (for use in recomposition), so
+    we apply the FOD transform to the prediction here before computing the loss.
+
+    Noise-gated: only active for samples where t >= threshold (clean predictions).
     """
 
     def __init__(self, noise_gate_threshold: float = 0.7):
         super().__init__()
-        self.threshold = noise_gate_threshold
+        self.threshold  = noise_gate_threshold
+        self.fod_alpha  = 1.8
+        self.fod_calibration = 10.0 ** (-(math.e) ** (1.0 / self.fod_alpha))
+        self.fod_thresh = 0.15
+
+    def _raw_to_fod(self, raw: torch.Tensor) -> torch.Tensor:
+        """
+        Apply PSPStain FOD transform to raw stain density.
+
+        Raw stain -> grey intensity proxy -> FOD.
+        The raw stain value in PSPStain scale corresponds to DAB's
+        grayscale contribution; we approximate it here directly.
+        """
+        # clamp to valid range; larger raw value = more DAB = darker brown
+        intensity = torch.clamp(raw, 0.0, 5.0)
+        # Treat raw density as an approximate intensity proxy
+        # (proper round-trip happens in PSPStainDABExtractor in dataset)
+        fod = torch.log10(1.0 / (intensity + self.fod_calibration))
+        fod = F.relu(fod) ** self.fod_alpha
+        fod = torch.where(fod < self.fod_thresh,
+                          torch.zeros_like(fod), fod)
+        return fod
 
     def forward(
         self,
-        dab_pred: torch.Tensor,    # [B, 1, H, W]
-        dab_gt:   torch.Tensor,    # [B, 1, H, W]
-        t:        torch.Tensor,    # [B]
+        dab_pred:   torch.Tensor,    # [B, 1, H, W] model output (raw PSPStain density)
+        dab_gt_fod: torch.Tensor,    # [B, 1, H, W] GT FOD from PSPStainDABExtractor
+        t:          torch.Tensor,    # [B]
     ) -> torch.Tensor:
-        gate = (t >= self.threshold).float()      # 1 for clean, 0 for noisy
+        gate = (t >= self.threshold).float()
         if gate.sum() == 0:
             return torch.tensor(0.0, device=dab_pred.device)
 
-        diff = F.mse_loss(dab_pred, dab_gt, reduction="none")  # [B, 1, H, W]
-        diff = diff.mean(dim=(1, 2, 3))                         # [B]
+        pred_fod = self._raw_to_fod(dab_pred)
+        diff = F.mse_loss(pred_fod, dab_gt_fod, reduction="none")  # [B, 1, H, W]
+        diff = diff.mean(dim=(1, 2, 3))                              # [B]
         return (diff * gate).sum() / gate.sum()
 
 
@@ -177,17 +209,18 @@ class DABPixelGenLoss(nn.Module):
 
     def forward(
         self,
-        x1_pred:       torch.Tensor,   # [B, 1, H, W] model output (clean DAB)
+        x1_pred:       torch.Tensor,   # [B, 1, H, W] model output (clean DAB density)
         h_norm_params: torch.Tensor,   # [B, 2]
         x_t:           torch.Tensor,   # [B, 1, H, W]
         v_target:      torch.Tensor,   # [B, 1, H, W]
         t:             torch.Tensor,   # [B]
-        dab_gt:        torch.Tensor,   # [B, 1, H, W]
+        dab_gt:        torch.Tensor,   # [B, 1, H, W] raw DAB density (for recomposition)
+        dab_gt_fod:    torch.Tensor,   # [B, 1, H, W] FOD DAB (for expression loss)
         h_he_density:  torch.Tensor,   # [B, 1, H, W]
         ihc_rgb_gt:    torch.Tensor,   # [B, 3, H, W] in [0, 1]
     ) -> Tuple[torch.Tensor, Dict]:
         l_fm   = self.fm_loss(x1_pred, x_t, v_target, t)
-        l_dab  = self.dab_loss_fn(x1_pred, dab_gt, t)
+        l_dab  = self.dab_loss_fn(x1_pred, dab_gt_fod, t)   # supervise on FOD space
         l_recomp, recomp_dict = self.recomp_loss_fn(
             x1_pred, h_norm_params, h_he_density, ihc_rgb_gt, t
         )

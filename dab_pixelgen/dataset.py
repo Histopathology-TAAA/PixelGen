@@ -1,11 +1,21 @@
 """
 Paired H&E -> IHC dataset for DABPixelGen training.
 
-Extends the StarDiff dataset to additionally return:
-  - h_he_density:  H-channel optical density from H&E stain deconvolution  [1, H, W]
-  - dab_gt:        DAB optical density from GT IHC stain deconvolution      [1, H, W]
+Each sample returns:
+  - h_he_density:   H PSPStain density from H&E deconvolution     [1, H, W]
+  - dab_gt:         Raw PSPStain DAB density from IHC              [1, H, W]
+                    (same scale as model output; used for recomposition)
+  - dab_gt_fod:     FOD-transformed DAB from IHC                   [1, H, W]
+                    (expression-level signal; used for DAB prediction loss)
 
-Stain deconvolution is performed CPU-side in __getitem__ (or preloaded to RAM).
+The two DAB representations are complementary:
+  dab_gt      → Beer-Lambert recomposition needs raw stain density
+  dab_gt_fod  → FOD emphasises positive nuclei/cells, suppresses background;
+                used by DABPredictionLoss for perceptually meaningful supervision
+
+Stain deconvolution uses the PSPStain pipeline (round-trip + FOD) for
+accurate brown-stain separation.  See stain_utils.PSPStainDABExtractor.
+
 Synchronized geometric augmentation (flips + 90° rotations) is applied before
 deconvolution so the density maps stay aligned with the cropped image pair.
 
@@ -35,7 +45,7 @@ PIXELGEN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PIXELGEN_ROOT not in sys.path:
     sys.path.insert(0, PIXELGEN_ROOT)
 
-from dab_pixelgen.stain_utils import StainDeconvolution
+from dab_pixelgen.stain_utils import StainDeconvolution, PSPStainDABExtractor
 
 
 # ── Kaggle dataset slugs (mirrors stardiff_pixelgen/dataset.py) ──────────────
@@ -154,7 +164,10 @@ class DABPairedDataset(Dataset):
         self.normalize = T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 
         # Stain deconvolution (CPU, float32)
-        self._deconv = StainDeconvolution()
+        # PSPStainDABExtractor: accurate round-trip DAB separation + FOD
+        # StainDeconvolution:   used only for H_HE (hematoxylin from H&E)
+        self._deconv    = StainDeconvolution()
+        self._dab_extractor = PSPStainDABExtractor()
 
         # Preload raw uint8 images into RAM (optional)
         self.preload_to_ram = preload_to_ram
@@ -196,15 +209,26 @@ class DABPairedDataset(Dataset):
 
     def _deconvolve_pair(self, he_01: torch.Tensor, ihc_01: torch.Tensor):
         """
-        Run stain deconvolution on [3, H, W] float32 in [0, 1] tensors.
-        Returns h_he_density [1, H, W] and dab_gt [1, H, W].
+        Stain deconvolution on [3, H, W] float32 in [0, 1] tensors.
+
+        Returns:
+            h_he_density: [1, H, W]  H density from H&E (PSPStain scale)
+            dab_gt:       [1, H, W]  raw DAB density from IHC (for recomposition)
+            dab_gt_fod:   [1, H, W]  FOD-transformed DAB (for expression loss)
         """
-        # Add batch dim, deconvolve, remove batch dim
         he_b  = he_01.unsqueeze(0)   # [1, 3, H, W]
         ihc_b = ihc_01.unsqueeze(0)  # [1, 3, H, W]
-        h_he  = self._deconv(he_b)["hematoxylin"].squeeze(0)  # [1, H, W]
-        dab   = self._deconv(ihc_b)["dab"].squeeze(0)          # [1, H, W]
-        return h_he, dab
+
+        # H from H&E: standard PSPStain deconv, take H channel (index 0)
+        h_he = self._deconv(he_b)["hematoxylin"].squeeze(0)          # [1, H, W]
+
+        # DAB from IHC: raw density (for Beer-Lambert recomposition)
+        dab_gt = self._dab_extractor.extract_raw_dab(ihc_b).squeeze(0)  # [1, H, W]
+
+        # DAB from IHC: FOD-transformed (round-trip + FOD, for expression supervision)
+        dab_gt_fod = self._dab_extractor(ihc_b).squeeze(0)              # [1, H, W]
+
+        return h_he, dab_gt, dab_gt_fod
 
     # ── __getitem__ ───────────────────────────────────────────────────────────
 
@@ -225,7 +249,7 @@ class DABPairedDataset(Dataset):
             he_f, ihc_f = self._augment(he_f, ihc_f)
 
         # Stain deconvolution BEFORE normalization (needs [0, 1] input)
-        h_he_density, dab_gt = self._deconvolve_pair(he_f, ihc_f)
+        h_he_density, dab_gt, dab_gt_fod = self._deconvolve_pair(he_f, ihc_f)
 
         # Keep IHC in [0, 1] for recomposition loss
         ihc_01 = ihc_f.clone()
@@ -238,8 +262,9 @@ class DABPairedDataset(Dataset):
             "he":           he_11,           # [3, H, W] in [-1, 1]
             "ihc":          ihc_11,          # [3, H, W] in [-1, 1]
             "ihc_01":       ihc_01,          # [3, H, W] in [0, 1]
-            "h_he_density": h_he_density,    # [1, H, W] >= 0
-            "dab_gt":       dab_gt,          # [1, H, W] >= 0
+            "h_he_density": h_he_density,    # [1, H, W] PSPStain H density
+            "dab_gt":       dab_gt,          # [1, H, W] raw DAB density (recomposition)
+            "dab_gt_fod":   dab_gt_fod,      # [1, H, W] FOD DAB (expression supervision)
             "filename":     filename,
         }
 

@@ -14,7 +14,7 @@ from dab_pixelgen.config    import DABPixelGenConfig
 from dab_pixelgen.model     import DABPixelGenModel, create_dab_model
 from dab_pixelgen.scheduler import DABFlowScheduler
 from dab_pixelgen.stain_utils import (
-    StainDeconvolution, StainRecomposer,
+    StainDeconvolution, StainRecomposer, PSPStainDABExtractor,
     analytical_recompose, normalize_h_density,
 )
 
@@ -25,6 +25,7 @@ __all__ = [
     "DABFlowScheduler",
     "StainDeconvolution",
     "StainRecomposer",
+    "PSPStainDABExtractor",
     "analytical_recompose",
     "normalize_h_density",
 ]

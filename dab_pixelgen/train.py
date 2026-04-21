@@ -303,8 +303,9 @@ def train_dab(
         he:           [B, 3, H, W]  H&E in [-1, 1]
         ihc:          [B, 3, H, W]  IHC in [-1, 1]  (unused)
         ihc_01:       [B, 3, H, W]  IHC in [0, 1]   (for recomp loss)
-        h_he_density: [B, 1, H, W]  H OD from H&E
-        dab_gt:       [B, 1, H, W]  DAB OD from IHC
+        h_he_density: [B, 1, H, W]  H density from H&E (PSPStain)
+        dab_gt:       [B, 1, H, W]  raw DAB density from IHC (for recomposition)
+        dab_gt_fod:   [B, 1, H, W]  FOD DAB from IHC (for expression supervision)
     """
     if accelerator.is_main_process:
         wandb.init(
@@ -334,7 +335,8 @@ def train_dab(
                 he           = batch["he"]
                 ihc_01       = batch["ihc_01"]
                 h_he_density = batch["h_he_density"]
-                dab_gt       = batch["dab_gt"]
+                dab_gt       = batch["dab_gt"]        # raw density → recomposition
+                dab_gt_fod   = batch["dab_gt_fod"]    # FOD → expression supervision
                 B = dab_gt.shape[0]
 
                 # ── Timestep sampling (logit-normal, focuses on mid-t) ────────
@@ -360,6 +362,7 @@ def train_dab(
                     v_target=v_target,
                     t=t,
                     dab_gt=dab_gt,
+                    dab_gt_fod=dab_gt_fod,
                     h_he_density=h_he_density,
                     ihc_rgb_gt=ihc_01,
                 )
