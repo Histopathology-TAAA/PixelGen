@@ -69,7 +69,7 @@ class DABPixelGenConfig:
     noise_gate_threshold: float = 0.7  # min t for DAB/recomp/perceptual losses
 
     # ── Training ──────────────────────────────────────────────────────────────
-    batch_size:                   int   = 48
+    batch_size:                   int   = 32
     learning_rate:                float = 1e-4
     num_epochs:                   int   = 80
     warmup_steps:                 int   = 500
