@@ -1,0 +1,31 @@
+[project]
+name = "pixelgen"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "wandb>=0.26.0",
+    "kaggle>=2.0.1",
+    "lpips>=0.1.4",
+    "einops>=0.8.2",
+    "tqdm>=4.67.3",
+    "diffusers[torch]>=0.37.1",
+    "transformers>=5.5.4",
+    "huggingface-hub>=1.11.0",
+    "scikit-image>=0.26.0",
+    "pillow>=12.2.0",
+    "matplotlib>=3.10.8",
+    "opencv-python>=4.13.0.92",
+    "scipy>=1.17.1",
+    "pytorch-msssim>=1.0.0",
+    "scikit-learn>=1.8.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
