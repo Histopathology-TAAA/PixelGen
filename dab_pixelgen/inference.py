@@ -240,7 +240,7 @@ class PracticalMetrics:
         B = real.shape[0]
 
         ssim_vals = [self._ssim(generated[i], real[i]) for i in range(B)]
-        mse = F.mse_loss(generated, real, reduction="none").view(B, -1).mean(1)
+        mse = F.mse_loss(generated, real, reduction="none").reshape(B, -1).mean(1)
         psnr_vals = (-10 * torch.log10(mse.clamp(1e-10))).cpu().numpy()
 
         lpips_val = 0.0

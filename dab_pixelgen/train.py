@@ -97,7 +97,7 @@ def compute_val_metrics(
     N = recomposed.shape[0]
 
     # ── IHC RGB ───────────────────────────────────────────────────────────────
-    ihc_mse_per = F.mse_loss(recomposed, ihc_gt, reduction="none").view(N, -1).mean(1)
+    ihc_mse_per = F.mse_loss(recomposed, ihc_gt, reduction="none").reshape(N, -1).mean(1)
     ihc_psnr    = (-10 * torch.log10(ihc_mse_per.clamp(min=1e-10))).mean().item()
     ihc_mae     = F.l1_loss(recomposed, ihc_gt).item()
     ihc_ssim    = _ssim_batch(recomposed, ihc_gt)
@@ -115,8 +115,8 @@ def compute_val_metrics(
     dab_mse = F.mse_loss(dab_pred, dab_gt).item()
 
     # Pearson r across all spatial positions, averaged over images
-    p_flat = dab_pred.view(N, -1)
-    g_flat = dab_gt.view(N, -1)
+    p_flat = dab_pred.reshape(N, -1)
+    g_flat = dab_gt.reshape(N, -1)
     p_c = p_flat - p_flat.mean(dim=1, keepdim=True)
     g_c = g_flat - g_flat.mean(dim=1, keepdim=True)
     num = (p_c * g_c).sum(dim=1)
