@@ -118,7 +118,7 @@ class StarDiffPixelGenConfig:
     he_init_alpha: float = 0.3
 
     # ── Training (from YAML) ──
-    batch_size: int = 128              
+    batch_size: int = 32              
     learning_rate: float = 1e-4         # from YAML: lr: 0.0001
     num_epochs: int = 50
     warmup_steps: int = 500
@@ -143,8 +143,8 @@ class StarDiffPixelGenConfig:
     mixed_precision: str = "bf16"         # from YAML: precision: bf16-mixed
 
     # ── Paths ──
-    dataset_root: str = "/teamspace/studios/this_studio/data"
-    output_dir: str = "/teamspace/studios/this_studio/output"
+    dataset_root: str = "/home/ahmed_ayman/data"
+    output_dir: str = "/home/ahmed_ayman/ayman/outputs/pixelgen_dab"
     # Pretrained PixelGen checkpoint for weight initialization
     # Must match model_size architecture (XL weights only load into XL models)
     pretrained_weight_path: Optional[str] = "./PixelGen_XL_80ep.ckpt"
@@ -153,7 +153,7 @@ class StarDiffPixelGenConfig:
     log_every: int = 20                   # from YAML: log_every_n_steps: 20
     save_every: int = 5
     val_every: int = 1
-    num_val_samples: int = 8              # from YAML: num_vis_samples: 8
+    num_val_samples: int = 12              # from YAML: num_vis_samples: 8
 
     # ── W&B (from YAML) ──
     wandb_project: str = "star-diff-he-to-ihc"
