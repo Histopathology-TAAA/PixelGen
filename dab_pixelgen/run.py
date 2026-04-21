@@ -24,7 +24,7 @@ PIXELGEN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PIXELGEN_ROOT not in sys.path:
     sys.path.insert(0, PIXELGEN_ROOT)
 
-from dab_pixelgen.config import DABPixelGenConfig, detect_gpu
+from dab_pixelgen.config import DABPixelGenConfig
 from dab_pixelgen.dataset import download_dataset, create_dataloaders, create_dataloaders_1024
 from dab_pixelgen.model import create_dab_model, create_dab_model_for_finetune, SimpleEMA
 from dab_pixelgen.scheduler import DABFlowScheduler
@@ -250,11 +250,8 @@ def finetune_512(checkpoint_path: str, new_resolution: int = 512, **config_overr
     Usage:
         python -m dab_pixelgen.run finetune path/to/dab_pixelgen_best.pt 512
     """
-    _, _, _, precision = detect_gpu()
 
     config = DABPixelGenConfig()
-    config.configure_for_finetune(checkpoint_path, new_resolution)
-    config.mixed_precision = precision
 
     for k, v in config_overrides.items():
         if hasattr(config, k):
@@ -345,11 +342,8 @@ def finetune_1024(
     Usage:
         python -m dab_pixelgen.run finetune path/to/dab_pixelgen_512.pt 1024
     """
-    _, _, _, precision = detect_gpu()
 
     config = DABPixelGenConfig()
-    config.configure_for_finetune(checkpoint_path, new_resolution)
-    config.mixed_precision = precision
     if dataset_root_1024:
         config.dataset_root = dataset_root_1024
 
